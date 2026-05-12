@@ -1,6 +1,6 @@
 {
   "name": "crawlshot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Crawl a site and screenshot every internal page at mobile/tablet/desktop, then zip the lot.",
   "bin": {
     "crawlshot": "dist/index.js"

@@ -1,8 +1,7 @@
 import { chromium } from "playwright";
-import archiver from "archiver";
+import { ZipArchive } from "archiver";
 import path from "path";
 import fs from "fs";
-import { URL } from "url";
 
 const BASE_URL = process.argv[2];
 
@@ -56,20 +55,31 @@ async function crawl(baseUrl: string): Promise<string[]> {
     visited.add(key);
 
     try {
-      await page.goto(url, { waitUntil: "networkidle", timeout: 20000 });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {
+        // networkidle may not fire on sites with persistent analytics; proceed anyway
+      });
       pages.push(url);
-      console.log(`  crawled → ${key}`);
 
       const links = await page.evaluate((origin: string) => {
         return Array.from(document.querySelectorAll("a[href]"))
           .map((el) => (el as HTMLAnchorElement).href)
-          .filter((href) => {
+          .map((href) => {
+            try {
+              const u = new URL(href);
+              // strip fragment + query for crawl canonicalisation
+              return u.origin + u.pathname;
+            } catch {
+              return null;
+            }
+          })
+          .filter((href): href is string => {
+            if (!href) return false;
             try {
               const u = new URL(href);
               return (
                 u.origin === origin &&
-                !href.includes("#") &&
-                !href.match(/\.(pdf|jpg|jpeg|png|svg|webp|zip|xml|json)$/i)
+                !u.pathname.match(/\.(pdf|jpg|jpeg|png|svg|webp|zip|xml|json|ico|txt|css|js|mjs|map)$/i)
               );
             } catch {
               return false;
@@ -77,12 +87,17 @@ async function crawl(baseUrl: string): Promise<string[]> {
           });
       }, base.origin);
 
+      const newLinks: string[] = [];
       for (const link of links) {
         const linkKey = new URL(link).pathname.replace(/\/$/, "") || "/";
-        if (!visited.has(linkKey)) queue.push(link);
+        if (!visited.has(linkKey) && !queue.some((q) => new URL(q).pathname.replace(/\/$/, "") === linkKey)) {
+          queue.push(link);
+          newLinks.push(linkKey);
+        }
       }
-    } catch {
-      console.warn(`  skipped  → ${key}`);
+      console.log(`  crawled → ${key}  (${links.length} links, ${newLinks.length} new)`);
+    } catch (err) {
+      console.warn(`  skipped  → ${key}  (${(err as Error).message})`);
     }
   }
 
@@ -104,7 +119,8 @@ async function shoot(pages: string[]): Promise<void> {
       });
 
       try {
-        await page.goto(url, { waitUntil: "networkidle", timeout: 20000 });
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(500);
         await page.screenshot({
           path: path.join(dir, `${vp.name}.png`),
@@ -125,7 +141,7 @@ async function shoot(pages: string[]): Promise<void> {
 function zip(): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(ZIP_PATH);
-    const archive = archiver("zip", { zlib: { level: 9 } });
+    const archive = new ZipArchive({ zlib: { level: 9 } });
 
     output.on("close", () => resolve());
     archive.on("error", reject);
