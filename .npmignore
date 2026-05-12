@@ -1,0 +1,7 @@
+src/
+screenshots/
+screenshots.zip
+tsconfig.json
+tsup.config.ts
+.gitignore
+.github/
