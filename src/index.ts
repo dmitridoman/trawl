@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 import { ZipArchive } from "archiver";
 import path from "path";
 import fs from "fs";
+import os from "os";
 
 const BASE_URL = process.argv[2];
 
@@ -17,20 +18,24 @@ Examples:
   crawlshot https://example.com
 
 Output:
-  ./screenshots/        per-page folders with mobile/tablet/desktop PNGs
-  ./screenshots.zip     zipped bundle
+  ~/Downloads/crawlshot-<timestamp>/
+    phone/     375px screenshots, one PNG per page
+    tablet/    768px screenshots, one PNG per page
+    desktop/   1440px screenshots, one PNG per page
+  ~/Downloads/crawlshot-<timestamp>.zip
 `);
   process.exit(BASE_URL ? 0 : 1);
 }
 
 const VIEWPORTS = [
-  { name: "mobile", width: 375, height: 812 },
-  { name: "tablet", width: 768, height: 1024 },
-  { name: "desktop", width: 1440, height: 900 },
+  { name: "phone",   width: 375,  height: 812  },
+  { name: "tablet",  width: 768,  height: 1024 },
+  { name: "desktop", width: 1440, height: 900  },
 ];
 
-const OUT_DIR = path.join(process.cwd(), "screenshots");
-const ZIP_PATH = path.join(process.cwd(), "screenshots.zip");
+const RUN_STAMP = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const OUT_DIR   = path.join(os.homedir(), "Downloads", `crawlshot-${RUN_STAMP}`);
+const ZIP_PATH  = path.join(os.homedir(), "Downloads", `crawlshot-${RUN_STAMP}.zip`);
 
 function toSlug(url: string): string {
   const u = new URL(url);
@@ -39,13 +44,15 @@ function toSlug(url: string): string {
 }
 
 async function crawl(baseUrl: string): Promise<string[]> {
-  const base = new URL(baseUrl);
   const visited = new Set<string>();
   const queue: string[] = [baseUrl];
   const pages: string[] = [];
 
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+
+  // Resolve the canonical origin after any www/https redirects on the first load
+  let resolvedOrigin: string | null = null;
 
   while (queue.length > 0) {
     const url = queue.shift()!;
@@ -59,9 +66,15 @@ async function crawl(baseUrl: string): Promise<string[]> {
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {
         // networkidle may not fire on sites with persistent analytics; proceed anyway
       });
-      pages.push(url);
 
-      const links = await page.evaluate((origin: string) => {
+      // capture the real origin from wherever the browser landed (handles www redirects)
+      if (!resolvedOrigin) {
+        resolvedOrigin = new URL(page.url()).origin;
+      }
+
+      pages.push(page.url());
+
+      const links = await page.evaluate((origin: string | null) => {
         return Array.from(document.querySelectorAll("a[href]"))
           .map((el) => (el as HTMLAnchorElement).href)
           .map((href) => {
@@ -78,14 +91,14 @@ async function crawl(baseUrl: string): Promise<string[]> {
             try {
               const u = new URL(href);
               return (
-                u.origin === origin &&
+                (origin === null || u.origin === origin) &&
                 !u.pathname.match(/\.(pdf|jpg|jpeg|png|svg|webp|zip|xml|json|ico|txt|css|js|mjs|map)$/i)
               );
             } catch {
               return false;
             }
           });
-      }, base.origin);
+      }, resolvedOrigin);
 
       const newLinks: string[] = [];
       for (const link of links) {
@@ -95,7 +108,8 @@ async function crawl(baseUrl: string): Promise<string[]> {
           newLinks.push(linkKey);
         }
       }
-      console.log(`  crawled → ${key}  (${links.length} links, ${newLinks.length} new)`);
+      const resolvedKey = new URL(page.url()).pathname.replace(/\/$/, "") || "/";
+      console.log(`  crawled → ${resolvedKey}  (${links.length} links, ${newLinks.length} new)`);
     } catch (err) {
       console.warn(`  skipped  → ${key}  (${(err as Error).message})`);
     }
@@ -108,10 +122,13 @@ async function crawl(baseUrl: string): Promise<string[]> {
 async function shoot(pages: string[]): Promise<void> {
   const browser = await chromium.launch();
 
+  // create viewport folders up-front
+  for (const vp of VIEWPORTS) {
+    fs.mkdirSync(path.join(OUT_DIR, vp.name), { recursive: true });
+  }
+
   for (const url of pages) {
     const slug = toSlug(url);
-    const dir = path.join(OUT_DIR, slug);
-    fs.mkdirSync(dir, { recursive: true });
 
     for (const vp of VIEWPORTS) {
       const page = await browser.newPage({
@@ -123,7 +140,7 @@ async function shoot(pages: string[]): Promise<void> {
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(500);
         await page.screenshot({
-          path: path.join(dir, `${vp.name}.png`),
+          path: path.join(OUT_DIR, vp.name, `${slug}.png`),
           fullPage: true,
         });
         console.log(`  ✓ ${slug} @ ${vp.name} (${vp.width}px)`);
@@ -146,15 +163,13 @@ function zip(): Promise<void> {
     output.on("close", () => resolve());
     archive.on("error", reject);
     archive.pipe(output);
-    archive.directory(OUT_DIR, "screenshots");
+    archive.directory(OUT_DIR, false);
     archive.finalize();
   });
 }
 
 async function main() {
-  if (fs.existsSync(OUT_DIR)) fs.rmSync(OUT_DIR, { recursive: true });
-  if (fs.existsSync(ZIP_PATH)) fs.rmSync(ZIP_PATH);
-  fs.mkdirSync(OUT_DIR);
+  fs.mkdirSync(OUT_DIR, { recursive: true });
 
   console.log(`\nCrawling ${BASE_URL}...\n`);
   const pages = await crawl(BASE_URL);
@@ -167,7 +182,8 @@ async function main() {
 
   const mb = (fs.statSync(ZIP_PATH).size / 1024 / 1024).toFixed(2);
   console.log(`\nDone. ${pages.length} pages × 3 viewports`);
-  console.log(`Zip: ${ZIP_PATH} (${mb} MB)\n`);
+  console.log(`Output: ${OUT_DIR}`);
+  console.log(`Zip:    ${ZIP_PATH} (${mb} MB)\n`);
 }
 
 main();
