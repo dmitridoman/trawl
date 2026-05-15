@@ -41,6 +41,7 @@
   },
   "dependencies": {
     "archiver": "^8.0.0",
+    "lighthouse": "^13.3.0",
     "playwright": "^1.59.1"
   },
   "devDependencies": {
