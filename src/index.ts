@@ -18,11 +18,16 @@ Examples:
   crawlshot https://example.com
 
 Output:
-  ~/Downloads/crawlshot-<timestamp>/
-    phone/     375px screenshots, one PNG per page
-    tablet/    768px screenshots, one PNG per page
-    desktop/   1440px screenshots, one PNG per page
-  ~/Downloads/crawlshot-<timestamp>.zip
+  ~/Downloads/crawlshot-<site>-<timestamp>/
+    light/
+      phone/     375px screenshots, one PNG per page
+      tablet/    768px screenshots, one PNG per page
+      desktop/   1440px screenshots, one PNG per page
+    dark/
+      phone/     …
+      tablet/    …
+      desktop/   …
+  ~/Downloads/crawlshot-<site>-<timestamp>.zip
 `);
   process.exit(BASE_URL ? 0 : 1);
 }
@@ -33,9 +38,12 @@ const VIEWPORTS = [
   { name: "desktop", width: 1440, height: 900  },
 ];
 
-const RUN_STAMP = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const OUT_DIR   = path.join(os.homedir(), "Downloads", `crawlshot-${RUN_STAMP}`);
-const ZIP_PATH  = path.join(os.homedir(), "Downloads", `crawlshot-${RUN_STAMP}.zip`);
+const COLOR_SCHEMES = ["light", "dark"] as const;
+
+const RUN_STAMP  = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const SITE_LABEL = new URL(BASE_URL).hostname.replace(/[^a-zA-Z0-9.\-]/g, "-");
+const OUT_DIR    = path.join(os.homedir(), "Downloads", `crawlshot-${SITE_LABEL}-${RUN_STAMP}`);
+const ZIP_PATH   = path.join(os.homedir(), "Downloads", `crawlshot-${SITE_LABEL}-${RUN_STAMP}.zip`);
 
 function toSlug(url: string): string {
   const u = new URL(url);
@@ -122,32 +130,38 @@ async function crawl(baseUrl: string): Promise<string[]> {
 async function shoot(pages: string[]): Promise<void> {
   const browser = await chromium.launch();
 
-  // create viewport folders up-front
-  for (const vp of VIEWPORTS) {
-    fs.mkdirSync(path.join(OUT_DIR, vp.name), { recursive: true });
+  // create scheme/viewport folders up-front
+  for (const scheme of COLOR_SCHEMES) {
+    for (const vp of VIEWPORTS) {
+      fs.mkdirSync(path.join(OUT_DIR, scheme, vp.name), { recursive: true });
+    }
   }
 
   for (const url of pages) {
     const slug = toSlug(url);
 
-    for (const vp of VIEWPORTS) {
-      const page = await browser.newPage({
-        viewport: { width: vp.width, height: vp.height },
-      });
-
-      try {
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(500);
-        await page.screenshot({
-          path: path.join(OUT_DIR, vp.name, `${slug}.png`),
-          fullPage: true,
+    for (const scheme of COLOR_SCHEMES) {
+      for (const vp of VIEWPORTS) {
+        const ctx = await browser.newContext({
+          viewport: { width: vp.width, height: vp.height },
+          colorScheme: scheme,
         });
-        console.log(`  ✓ ${slug} @ ${vp.name} (${vp.width}px)`);
-      } catch {
-        console.warn(`  ✗ ${slug} @ ${vp.name} — failed`);
-      } finally {
-        await page.close();
+        const page = await ctx.newPage();
+
+        try {
+          await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+          await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+          await page.waitForTimeout(500);
+          await page.screenshot({
+            path: path.join(OUT_DIR, scheme, vp.name, `${slug}.png`),
+            fullPage: true,
+          });
+          console.log(`  ✓ ${slug} @ ${scheme}/${vp.name} (${vp.width}px)`);
+        } catch {
+          console.warn(`  ✗ ${slug} @ ${scheme}/${vp.name} — failed`);
+        } finally {
+          await ctx.close();
+        }
       }
     }
   }
@@ -181,7 +195,7 @@ async function main() {
   await zip();
 
   const mb = (fs.statSync(ZIP_PATH).size / 1024 / 1024).toFixed(2);
-  console.log(`\nDone. ${pages.length} pages × 3 viewports`);
+  console.log(`\nDone. ${pages.length} pages × ${VIEWPORTS.length} viewports × ${COLOR_SCHEMES.length} modes`);
   console.log(`Output: ${OUT_DIR}`);
   console.log(`Zip:    ${ZIP_PATH} (${mb} MB)\n`);
 }
