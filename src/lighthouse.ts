@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 import path from "path";
 import fs from "fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { PageRecord } from "./util";
 import { dismissCookieBanner } from "./cookies";
 
@@ -10,6 +11,17 @@ export type Scores = {
   bestPractices: number;
   seo: number;
 };
+
+// Jittered delay between Lighthouse audits. Lighthouse fires many requests per
+// page; back-to-back audits without a breather will trip rate-limiters on
+// small/shared hosts (Vercel, Wix, low-tier shared shosts), producing all-zero
+// scores. 2–4s with jitter keeps per-server QPS sane.
+const AUDIT_DELAY_MIN_MS = 2000;
+const AUDIT_DELAY_MAX_MS = 4000;
+
+function auditDelayMs(): number {
+  return Math.floor(Math.random() * (AUDIT_DELAY_MAX_MS - AUDIT_DELAY_MIN_MS + 1)) + AUDIT_DELAY_MIN_MS;
+}
 
 export async function runLighthouse(
   pages: PageRecord[],
@@ -43,7 +55,10 @@ export async function runLighthouse(
   }
 
   try {
+    let isFirst = true;
     for (const rec of pages) {
+      if (!isFirst) await sleep(auditDelayMs());
+      isFirst = false;
       try {
         const result = await lighthouse(
           rec.url,
