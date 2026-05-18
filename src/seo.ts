@@ -2,22 +2,22 @@ import type { Page } from "playwright";
 import type { SeoMeta } from "./util";
 
 export async function extractSeo(page: Page): Promise<SeoMeta> {
-  return page.evaluate(() => {
-    const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? "";
-    const attr = (sel: string, name: string) =>
-      (document.querySelector(sel) as HTMLElement | null)?.getAttribute(name) ?? null;
+  return page.evaluate(`(() => {
+    const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? "";
+    const attr = (sel, name) =>
+      document.querySelector(sel)?.getAttribute(name) ?? null;
 
     const title = text("title");
 
-    const metaContent = (name: string): string | null => {
+    const metaContent = (name) => {
       const el =
-        document.querySelector(`meta[name="${name}" i]`) ||
-        document.querySelector(`meta[property="${name}" i]`);
+        document.querySelector('meta[name="' + name + '" i]') ||
+        document.querySelector('meta[property="' + name + '" i]');
       return el?.getAttribute("content") ?? null;
     };
 
-    const og: Record<string, string> = {};
-    const twitter: Record<string, string> = {};
+    const og = {};
+    const twitter = {};
     document.querySelectorAll("meta").forEach((m) => {
       const prop = m.getAttribute("property") || m.getAttribute("name") || "";
       const content = m.getAttribute("content") || "";
@@ -36,14 +36,14 @@ export async function extractSeo(page: Page): Promise<SeoMeta> {
       return alt === null || alt.trim() === "";
     }).length;
 
-    const jsonLdTypes: string[] = [];
+    const jsonLdTypes = [];
     document.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
       try {
         const parsed = JSON.parse(s.textContent || "null");
         const items = Array.isArray(parsed) ? parsed : [parsed];
         for (const item of items) {
           if (item && typeof item === "object") {
-            const t = (item as { "@type"?: string | string[] })["@type"];
+            const t = item["@type"];
             if (Array.isArray(t)) jsonLdTypes.push(...t);
             else if (typeof t === "string") jsonLdTypes.push(t);
           }
@@ -72,7 +72,7 @@ export async function extractSeo(page: Page): Promise<SeoMeta> {
       twitter,
       jsonLdTypes: [...new Set(jsonLdTypes)],
     };
-  }) as Promise<SeoMeta>;
+  })()`) as Promise<SeoMeta>;
 }
 
 export type SeoIssue = { slug: string; severity: "warn" | "error"; message: string };

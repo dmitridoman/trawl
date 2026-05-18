@@ -28,6 +28,7 @@ import { runAxe } from "./axe";
 import { checkLinks } from "./links";
 import { buildResults, writeResults, type Results } from "./results";
 import { writeCompareReport } from "./compare";
+import { recordVideos } from "./video";
 
 const STILL_CSS = `
 *, *::before, *::after {
@@ -103,6 +104,12 @@ Scope flags:
 Performance:
   --concurrency <N>      parallel pages in flight (default ${DEFAULT_CONCURRENCY})
 
+Video:
+  --video                record a scrolling video of each crawled page
+  --video-pages <regex>  only record pages whose URL matches this regex
+  --video-viewport <vp>  viewport to record: phone, tablet, desktop (repeatable, default desktop)
+  --video-scheme <s>     color scheme to record: light, dark (repeatable, default light)
+
   -h, --help             show this help
 `;
 
@@ -117,15 +124,19 @@ function parseCli(): ParsedCli {
     parsed = parseArgs({
       args: process.argv.slice(2),
       options: {
-        "no-lighthouse": { type: "boolean" },
-        "no-axe":        { type: "boolean" },
-        "no-links":      { type: "boolean" },
-        "max-pages":     { type: "string" },
-        "max-depth":     { type: "string" },
-        "include":       { type: "string" },
-        "exclude":       { type: "string" },
-        "concurrency":   { type: "string" },
-        "help":          { type: "boolean", short: "h" },
+        "no-lighthouse":  { type: "boolean" },
+        "no-axe":         { type: "boolean" },
+        "no-links":       { type: "boolean" },
+        "max-pages":      { type: "string" },
+        "max-depth":      { type: "string" },
+        "include":        { type: "string" },
+        "exclude":        { type: "string" },
+        "concurrency":    { type: "string" },
+        "video":          { type: "boolean" },
+        "video-pages":    { type: "string" },
+        "video-viewport": { type: "string", multiple: true },
+        "video-scheme":   { type: "string", multiple: true },
+        "help":           { type: "boolean", short: "h" },
       },
       allowPositionals: true,
     });
@@ -162,6 +173,28 @@ function parseCli(): ParsedCli {
     }
   };
 
+  const videoEnabled = Boolean(values["video"]);
+
+  const rawViewports = (values["video-viewport"] as string[] | undefined) ?? [];
+  const validViewportNames = VIEWPORTS.map((v) => v.name);
+  for (const vp of rawViewports) {
+    if (!validViewportNames.includes(vp as typeof VIEWPORTS[number]["name"])) {
+      console.error(`crawlshot: --video-viewport must be one of: ${validViewportNames.join(", ")}, got "${vp}"`);
+      process.exit(1);
+    }
+  }
+  const videoViewports = rawViewports.length > 0 ? rawViewports : ["desktop"];
+
+  const rawSchemes = (values["video-scheme"] as string[] | undefined) ?? [];
+  const validSchemes = [...COLOR_SCHEMES];
+  for (const s of rawSchemes) {
+    if (!validSchemes.includes(s as typeof COLOR_SCHEMES[number])) {
+      console.error(`crawlshot: --video-scheme must be one of: ${validSchemes.join(", ")}, got "${s}"`);
+      process.exit(1);
+    }
+  }
+  const videoSchemes = rawSchemes.length > 0 ? rawSchemes : ["light"];
+
   const options: RunOptions = {
     noLighthouse: Boolean(values["no-lighthouse"]),
     noAxe:        Boolean(values["no-axe"]),
@@ -171,6 +204,10 @@ function parseCli(): ParsedCli {
     include:      re(values["include"], "include"),
     exclude:      re(values["exclude"], "exclude"),
     concurrency:  num(values["concurrency"], "concurrency") ?? DEFAULT_CONCURRENCY,
+    video:        videoEnabled,
+    videoPages:   re(values["video-pages"], "video-pages"),
+    videoViewports,
+    videoSchemes,
   };
 
   const urls = expandUrlSources(positionals);
@@ -283,8 +320,11 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
   const consoleEvents = new Map<string, ConsoleEvent[]>();
   const outboundLinks: { fromSlug: string; url: string }[] = [];
 
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({
+    args: ["--ignore-certificate-errors"],
+  });
   let resolvedOrigin: string | null = null;
+  const crawledResolvedKeys = new Set<string>();
   let active = 0;
   let stopped = false;
 
@@ -306,6 +346,13 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
       }
 
       const resolvedUrl = page.url();
+      const resolvedKey = new URL(resolvedUrl).pathname.replace(/\/$/, "") || "/";
+      if (crawledResolvedKeys.has(resolvedKey)) {
+        console.log(`  skipped  → ${key}  (resolved duplicate ${resolvedKey})`);
+        return;
+      }
+      crawledResolvedKeys.add(resolvedKey);
+
       const slug = toSlug(resolvedUrl);
       const title = (await page.title().catch(() => "")) || "";
       pages.push({ url: resolvedUrl, slug, title });
@@ -322,12 +369,13 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         console.warn(`    seo extract failed for ${slug}: ${(err as Error).message}`);
       }
 
-      const linkData = await page.evaluate((origin: string | null) => {
+      const linkData = await page.evaluate(`(() => {
+        const origin = ${JSON.stringify(resolvedOrigin)};
         const all = Array.from(document.querySelectorAll("a[href]"))
-          .map((el) => (el as HTMLAnchorElement).href)
-          .filter((href): href is string => Boolean(href));
+          .map((el) => el.href)
+          .filter((href) => Boolean(href));
 
-        const norm = (href: string): { url: string; pathOnly: string } | null => {
+        const norm = (href) => {
           try {
             const u = new URL(href);
             return { url: u.toString(), pathOnly: u.origin + u.pathname };
@@ -336,14 +384,14 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
           }
         };
 
-        const internalForQueue: string[] = [];
-        const outbound: string[] = [];
+        const internalForQueue = [];
+        const outbound = [];
         for (const raw of all) {
           const n = norm(raw);
           if (!n) continue;
-          let parsed: URL;
+          let parsed;
           try { parsed = new URL(n.url); } catch { continue; }
-          const isAsset = /\.(pdf|jpg|jpeg|png|svg|webp|zip|xml|json|ico|txt|css|js|mjs|map)$/i.test(parsed.pathname);
+          const isAsset = /\\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|xml|json|ico|txt|css|js|mjs|map)$/i.test(parsed.pathname);
           const isMail = /^(mailto|tel|javascript):/i.test(raw);
           if (isMail) continue;
           if (origin && parsed.origin === origin && !isAsset) {
@@ -354,7 +402,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
           }
         }
         return { internalForQueue: Array.from(new Set(internalForQueue)), outbound: Array.from(new Set(outbound)) };
-      }, resolvedOrigin);
+      })()`) as { internalForQueue: string[]; outbound: string[] };
 
       let newCount = 0;
       const atDepthLimit = opts.maxDepth !== null && item.depth >= opts.maxDepth;
@@ -374,7 +422,6 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         outboundLinks.push({ fromSlug: slug, url: out });
       }
 
-      const resolvedKey = new URL(page.url()).pathname.replace(/\/$/, "") || "/";
       console.log(
         `  crawled → ${resolvedKey}  (d=${item.depth}, ${linkData.internalForQueue.length} internal, ${newCount} new, ${linkData.outbound.length} outbound, status ${status})`,
       );
@@ -391,7 +438,10 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
   }
 
   async function worker(): Promise<void> {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const ctx = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      viewport: { width: 1440, height: 900 },
+    });
     const page = await ctx.newPage();
     try {
       while (true) {
@@ -437,7 +487,9 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
 type ShootJob = { rec: PageRecord; scheme: typeof COLOR_SCHEMES[number]; vp: typeof VIEWPORTS[number] };
 
 async function shoot(pages: PageRecord[], outDir: string, runAxeScan: boolean, concurrency: number): Promise<Map<string, AxeSummary>> {
-  const browser: Browser = await chromium.launch();
+  const browser: Browser = await chromium.launch({
+    args: ["--ignore-certificate-errors"],
+  });
   const axeResults = new Map<string, AxeSummary>();
   const axeLock = new Set<string>(); // prevents concurrent axe runs on the same slug
 
@@ -468,6 +520,7 @@ async function shoot(pages: PageRecord[], outDir: string, runAxeScan: boolean, c
       let ctx: BrowserContext | null = null;
       try {
         ctx = await browser.newContext({
+          ignoreHTTPSErrors: true,
           viewport: { width: vp.width, height: vp.height },
           colorScheme: scheme,
           reducedMotion: "reduce",
@@ -476,7 +529,7 @@ async function shoot(pages: PageRecord[], outDir: string, runAxeScan: boolean, c
 
         await page.goto(rec.url, { waitUntil: "domcontentloaded", timeout: 30000 });
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
-        await page.evaluate(() => (document as { fonts?: { ready: Promise<unknown> } }).fonts?.ready).catch(() => {});
+        await page.evaluate("(() => document.fonts?.ready)()").catch(() => {});
         await dismissCookieBanner(page);
 
         // Run axe BEFORE injecting our still/hide CSS so the DOM matches the real page.
@@ -568,6 +621,13 @@ async function runSite(
     } catch (err) {
       console.warn(`Link check phase failed: ${(err as Error).message}`);
     }
+  }
+
+  if (options.video && crawled.pages.length > 0) {
+    const vpList = options.videoViewports.join(", ");
+    const schemeList = options.videoSchemes.join(", ");
+    console.log(`\nRecording videos (${vpList} × ${schemeList})...\n`);
+    await recordVideos(crawled.pages, outDir, options);
   }
 
   console.log("\nBuilding results.json...");

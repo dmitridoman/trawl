@@ -85,6 +85,10 @@ export type RunOptions = {
   include: RegExp | null;
   exclude: RegExp | null;
   concurrency: number;
+  video: boolean;
+  videoPages: RegExp | null;
+  videoViewports: string[];
+  videoSchemes: string[];
 };
 
 export const DEFAULT_CONCURRENCY = 4;
