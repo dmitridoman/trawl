@@ -18,6 +18,9 @@ export type ConsoleEvent = {
   type: "error" | "warning" | "pageerror";
   text: string;
   location?: string;
+  // Full stack trace for uncaught exceptions (pageerror). Captured so an agent
+  // can locate the throwing frame without re-running the page.
+  stack?: string;
 };
 
 export type SeoMeta = {
@@ -47,15 +50,37 @@ export type SecurityHeaders = {
 
 export type AxeImpact = "minor" | "moderate" | "serious" | "critical";
 
+// A single axe check result attached to a node (from the violation's any/all/none
+// arrays). `message` is the human-readable, per-node fix; `data` carries structured
+// specifics (e.g. color-contrast: { fgColor, bgColor, contrastRatio, expectedContrastRatio,
+// fontSize, fontWeight }).
+export type AxeCheck = {
+  id: string;
+  message: string;
+  data?: unknown;
+};
+
+// A single DOM node that triggered a violation.
+export type AxeNode = {
+  target: string;        // CSS selector path to the element
+  html: string;          // the element's outerHTML snippet
+  failureSummary: string | null; // axe's "Fix any of the following: …" guidance
+  checks: AxeCheck[];
+};
+
+// Cap on nodes captured per violation in results.json / index.html. The full,
+// uncapped set always remains in a11y/<slug>.json.
+export const AXE_NODE_CAP = 25;
+
 export type AxeViolation = {
   id: string;
   impact: AxeImpact | null;
   help: string;
   helpUrl: string;
   wcag: string[];
-  nodes: number;
-  sampleSelector: string | null;
-  sampleHtml: string | null;
+  nodeCount: number;        // total nodes that triggered this rule
+  nodes: AxeNode[];         // up to AXE_NODE_CAP of them, with full detail
+  nodesTruncated: boolean;  // true when nodeCount > nodes.length
 };
 
 export type AxeSummary = {
@@ -66,7 +91,9 @@ export type AxeSummary = {
 };
 
 export type LinkCheck = {
-  fromSlug: string;
+  fromSlug: string;       // first page the link was seen on (back-compat)
+  fromSlugs: string[];    // every crawled page that links to this URL
+  text?: string;          // anchor text, so an agent can locate the link in source
   url: string;
   status: number | null;
   ok: boolean;

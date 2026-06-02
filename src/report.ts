@@ -1,7 +1,7 @@
 import path from "path";
 import fs from "fs";
-import { VIEWPORTS, COLOR_SCHEMES, type SeoMeta, type AxeSummary, type SecurityHeaders, type ConsoleEvent, type LinkCheck } from "./util";
-import type { Scores } from "./lighthouse";
+import { VIEWPORTS, COLOR_SCHEMES, type SeoMeta, type AxeSummary, type AxeNode, type SecurityHeaders, type ConsoleEvent, type LinkCheck } from "./util";
+import type { Scores, LighthouseDetail, LighthouseMetric } from "./lighthouse";
 import { seoIssues } from "./seo";
 import type { Results, PageResult } from "./results";
 
@@ -97,6 +97,149 @@ function seoRow(seo: SeoMeta): string {
   </div>`;
 }
 
+function fmtBytes(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (v >= 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} MB`;
+  if (v >= 1024) return `${(v / 1024).toFixed(0)} KB`;
+  return `${Math.round(v)} B`;
+}
+
+function metricTier(score: number | null): "good" | "ok" | "bad" {
+  if (score === null) return "ok";
+  return score >= 0.9 ? "good" : score >= 0.5 ? "ok" : "bad";
+}
+
+// Lighthouse descriptions are markdown; flatten links to "text (url)" and drop
+// emphasis/code markers so the guidance reads cleanly as plain text.
+function stripMd(s: string): string {
+  return s
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/[`*_]/g, "")
+    .trim();
+}
+
+function metricRow(m: LighthouseMetric): string {
+  const tier = metricTier(m.score);
+  const raw = m.numericValue === null
+    ? "—"
+    : m.numericUnit === "millisecond"
+      ? `${Math.round(m.numericValue)} ms`
+      : m.numericValue.toFixed(3);
+  return `<tr class="metric-${tier}">
+    <td class="metric-name">${escapeHtml(m.title)}</td>
+    <td class="metric-val">${escapeHtml(m.displayValue ?? "—")}</td>
+    <td class="metric-raw">${escapeHtml(raw)}</td>
+  </tr>`;
+}
+
+function metricValueById(detail: LighthouseDetail, id: string): string | null {
+  const m = detail.metrics.find((x) => x.id === id);
+  return m?.displayValue ?? null;
+}
+
+function performanceSection(detail: LighthouseDetail): string {
+  const d = detail.diagnostics;
+
+  const metricsTable = detail.metrics.length > 0
+    ? `<table class="metrics-table">
+        <thead><tr><th>Metric</th><th>Value</th><th>Exact</th></tr></thead>
+        <tbody>${detail.metrics.map(metricRow).join("")}</tbody>
+      </table>`
+    : "";
+
+  const opps = detail.opportunities.length > 0
+    ? `<h4>Opportunities (${detail.opportunities.length})</h4>
+       <ul class="opp-list">${detail.opportunities
+         .map((o) => {
+           const save = [
+             o.savingsMs != null ? `~${Math.round(o.savingsMs)} ms` : null,
+             o.savingsBytes != null ? `~${fmtBytes(o.savingsBytes)}` : null,
+           ].filter(Boolean).join(" · ");
+           const items = o.items
+             .filter((it) => it.url)
+             .slice(0, 6)
+             .map((it) => {
+               const meta = [
+                 it.wastedMs != null ? `${Math.round(it.wastedMs)} ms` : null,
+                 it.wastedBytes != null ? fmtBytes(it.wastedBytes) : null,
+               ].filter(Boolean).join(" · ");
+               return `<li><span class="opp-res">${escapeHtml(it.url ?? "")}</span>${meta ? ` <span class="opp-meta">${escapeHtml(meta)}</span>` : ""}</li>`;
+             })
+             .join("");
+           return `<li class="opp">
+             <div class="opp-head"><strong>${escapeHtml(o.title)}</strong>${save ? ` <span class="opp-save">${escapeHtml(save)}</span>` : ""}</div>
+             ${items ? `<ul class="opp-items">${items}</ul>` : ""}
+           </li>`;
+         })
+         .join("")}</ul>`
+    : "";
+
+  const diagBits: string[] = [];
+  if (d.lcpElement && (d.lcpElement.selector || d.lcpElement.snippet)) {
+    diagBits.push(`<li><span class="diag-key">LCP element</span> <code>${escapeHtml(d.lcpElement.selector || d.lcpElement.snippet)}</code></li>`);
+  }
+  if (d.layoutShiftElements.length > 0) {
+    const first = d.layoutShiftElements[0]!;
+    diagBits.push(`<li><span class="diag-key">Layout shift</span> <code>${escapeHtml(first.selector || first.snippet)}</code>${d.layoutShiftElements.length > 1 ? ` <span class="diag-more">+${d.layoutShiftElements.length - 1}</span>` : ""}</li>`);
+  }
+  if (d.thirdParty.length > 0) {
+    const tp = d.thirdParty
+      .slice(0, 6)
+      .map((t) => `${escapeHtml(t.entity)}${t.blockingMs != null ? ` (${Math.round(t.blockingMs)} ms)` : ""}`)
+      .join(", ");
+    diagBits.push(`<li><span class="diag-key">Third-party</span> ${tp}</li>`);
+  }
+  if (d.mainThreadWorkMs != null) diagBits.push(`<li><span class="diag-key">Main-thread work</span> ${Math.round(d.mainThreadWorkMs)} ms</li>`);
+  if (d.bootupTimeMs != null) diagBits.push(`<li><span class="diag-key">JS bootup</span> ${Math.round(d.bootupTimeMs)} ms</li>`);
+  if (d.domSize != null) diagBits.push(`<li><span class="diag-key">DOM nodes</span> ${d.domSize}</li>`);
+  const diag = diagBits.length > 0 ? `<h4>Diagnostics</h4><ul class="diag-list">${diagBits.join("")}</ul>` : "";
+
+  const failing = detail.failingAudits.length > 0
+    ? `<h4>Other failing audits (${detail.failingAudits.length})</h4>
+       <ul class="audit-list">${detail.failingAudits
+         .map((a) => `<li>
+           <strong>${escapeHtml(a.title)}</strong>${a.displayValue ? ` <span class="audit-val">${escapeHtml(a.displayValue)}</span>` : ""}
+           ${a.description ? `<div class="audit-desc">${escapeHtml(stripMd(a.description))}</div>` : ""}
+         </li>`)
+         .join("")}</ul>`
+    : "";
+
+  return `${metricsTable}${opps}${diag}${failing}`;
+}
+
+function axeNodeBlock(n: AxeNode): string {
+  const contrast = n.checks.find((c) => c.id === "color-contrast");
+  let contrastInfo = "";
+  if (contrast && contrast.data && typeof contrast.data === "object") {
+    const dat = contrast.data as Record<string, unknown>;
+    const fg = typeof dat.fgColor === "string" ? dat.fgColor : null;
+    const bg = typeof dat.bgColor === "string" ? dat.bgColor : null;
+    const ratio = typeof dat.contrastRatio === "number" ? dat.contrastRatio : null;
+    const expected = dat.expectedContrastRatio != null ? String(dat.expectedContrastRatio) : null;
+    const parts: string[] = [];
+    if (ratio != null) parts.push(`ratio ${ratio}:1`);
+    if (expected) parts.push(`needs ${expected}`);
+    if (fg) parts.push(`fg ${fg}`);
+    if (bg) parts.push(`bg ${bg}`);
+    if (parts.length > 0) {
+      const swatches = `${fg ? `<span class="swatch" style="background:${escapeHtml(fg)}"></span>` : ""}${bg ? `<span class="swatch" style="background:${escapeHtml(bg)}"></span>` : ""}`;
+      contrastInfo = `<div class="axe-contrast">${escapeHtml(parts.join(" · "))} ${swatches}</div>`;
+    }
+  }
+  return `<li class="axe-node">
+    <code class="axe-target">${escapeHtml(n.target)}</code>
+    ${n.failureSummary ? `<div class="axe-fix">${escapeHtml(n.failureSummary)}</div>` : ""}
+    ${contrastInfo}
+    <pre class="axe-html">${escapeHtml(n.html)}</pre>
+  </li>`;
+}
+
+function externalChip(): string {
+  return `<span class="chip chip-ext" title="Off-origin (third-party) page reached via redirect — excluded from averages; issues here are not yours to fix">
+    <span class="chip-label">third-party</span>
+  </span>`;
+}
+
 function pageCard(rec: PageResult): string {
   const title = rec.title.trim() || rec.slug;
   const lhHref = `lighthouse/${encodeURIComponent(rec.slug)}.html`;
@@ -105,14 +248,26 @@ function pageCard(rec: PageResult): string {
   const chips: string[] = [];
   chips.push(statusChip(rec.status));
   if (rec.lighthouse) {
-    chips.push(scoreChip(SCORE_LABELS.performance, rec.lighthouse.performance, lhHref));
-    chips.push(scoreChip(SCORE_LABELS.accessibility, rec.lighthouse.accessibility, lhHref));
-    chips.push(scoreChip(SCORE_LABELS.bestPractices, rec.lighthouse.bestPractices, lhHref));
-    chips.push(scoreChip(SCORE_LABELS.seo, rec.lighthouse.seo, lhHref));
+    const sc = rec.lighthouse.scores;
+    chips.push(scoreChip(SCORE_LABELS.performance, sc.performance, lhHref));
+    chips.push(scoreChip(SCORE_LABELS.accessibility, sc.accessibility, lhHref));
+    chips.push(scoreChip(SCORE_LABELS.bestPractices, sc.bestPractices, lhHref));
+    chips.push(scoreChip(SCORE_LABELS.seo, sc.seo, lhHref));
   }
   if (rec.axe) chips.push(axeChip(rec.axe, axeHref));
   if (rec.security) chips.push(secChip(rec.security));
   chips.push(consoleChip(rec.console));
+  if (rec.external) chips.unshift(externalChip());
+
+  let perfSection = "";
+  if (rec.lighthouse) {
+    const lh = rec.lighthouse;
+    const lcp = metricValueById(lh, "largest-contentful-paint");
+    perfSection = `<details class="details"><summary>Performance detail${lcp ? ` — LCP ${escapeHtml(lcp)}` : ""}</summary>
+        ${performanceSection(lh)}
+        <p class="more"><a href="${lhHref}">full Lighthouse report ↗</a></p>
+      </details>`;
+  }
 
   const thumbs = COLOR_SCHEMES.flatMap((scheme) =>
     VIEWPORTS.map((vp) => {
@@ -129,13 +284,12 @@ function pageCard(rec: PageResult): string {
     ? `<details class="details"><summary>Console (${rec.console.length})</summary>
         <ul class="console-list">
           ${rec.console
-            .slice(0, 20)
             .map(
               (e) =>
-                `<li class="console-${e.type}"><span class="console-type">${e.type}</span> ${escapeHtml(e.text)}${e.location ? ` <span class="console-loc">${escapeHtml(e.location)}</span>` : ""}</li>`,
+                `<li class="console-${e.type}"><span class="console-type">${e.type}</span> ${escapeHtml(e.text)}${e.location ? ` <span class="console-loc">${escapeHtml(e.location)}</span>` : ""}${e.stack ? `<pre class="console-stack">${escapeHtml(e.stack)}</pre>` : ""}</li>`,
             )
             .join("")}
-        </ul>${rec.console.length > 20 ? `<p class="more">…${rec.console.length - 20} more in results.json</p>` : ""}
+        </ul>
       </details>`
     : "";
 
@@ -143,18 +297,21 @@ function pageCard(rec: PageResult): string {
     ? `<details class="details"><summary>Accessibility (${rec.axe.violationCount} violations, ${rec.axe.nodeCount} nodes)</summary>
         <ul class="axe-list">
           ${rec.axe.violations
-            .slice(0, 10)
             .map(
               (v) =>
                 `<li class="axe-${v.impact ?? "minor"}">
-                  <span class="axe-impact">${v.impact ?? "minor"}</span>
-                  <a href="${escapeHtml(v.helpUrl)}" target="_blank" rel="noopener"><strong>${escapeHtml(v.id)}</strong></a> —
-                  ${escapeHtml(v.help)} (${v.nodes} node${v.nodes === 1 ? "" : "s"})
-                  ${v.wcag.length > 0 ? `<span class="axe-wcag">${v.wcag.map(escapeHtml).join(", ")}</span>` : ""}
+                  <div class="axe-head">
+                    <span class="axe-impact">${v.impact ?? "minor"}</span>
+                    <a href="${escapeHtml(v.helpUrl)}" target="_blank" rel="noopener"><strong>${escapeHtml(v.id)}</strong></a> —
+                    ${escapeHtml(v.help)} (${v.nodeCount} node${v.nodeCount === 1 ? "" : "s"})
+                    ${v.wcag.length > 0 ? `<span class="axe-wcag">${v.wcag.map(escapeHtml).join(", ")}</span>` : ""}
+                  </div>
+                  <ul class="axe-nodes">${v.nodes.map(axeNodeBlock).join("")}</ul>
+                  ${v.nodesTruncated ? `<p class="more">…${v.nodeCount - v.nodes.length} more node${v.nodeCount - v.nodes.length === 1 ? "" : "s"} in <a href="${escapeHtml(axeHref)}">a11y/${escapeHtml(rec.slug)}.json</a></p>` : ""}
                 </li>`,
             )
             .join("")}
-        </ul>${rec.axe.violations.length > 10 ? `<p class="more">…${rec.axe.violations.length - 10} more in <a href="${escapeHtml(axeHref)}">a11y/${escapeHtml(rec.slug)}.json</a></p>` : ""}
+        </ul>
       </details>`
     : "";
 
@@ -175,18 +332,24 @@ function pageCard(rec: PageResult): string {
       </details>`
     : "";
 
-  return `<section class="card" id="page-${escapeHtml(rec.slug)}">
+  return `<section class="card${rec.external ? " card-external" : ""}" id="page-${escapeHtml(rec.slug)}">
     <header>
       <h2>${escapeHtml(title)}</h2>
       <a class="url" href="${escapeHtml(rec.url)}" target="_blank" rel="noopener">${escapeHtml(rec.url)}</a>
     </header>
+    ${rec.external ? `<p class="ext-banner">Third-party page (off-origin, reached via redirect). Excluded from site averages — issues below belong to the external host, not this site.</p>` : ""}
     <div class="chips">${chips.join("")}</div>
+    ${perfSection}
     ${rec.seo ? seoRow(rec.seo) : ""}
     ${axeSection}
     ${securitySection}
     ${consoleSection}
     <div class="grid">${thumbs}</div>
   </section>`;
+}
+
+function extTag(p: PageResult): string {
+  return p.external ? ` <span class="ext-tag">third-party</span>` : "";
 }
 
 function issuesPanel(results: Results): string {
@@ -205,16 +368,20 @@ function issuesPanel(results: Results): string {
   }
 
   const linkRows = broken
-    .slice(0, 30)
-    .map(
-      (l) =>
-        `<tr>
-          <td><a href="#page-${escapeHtml(l.fromSlug)}">${escapeHtml(l.fromSlug)}</a></td>
+    .map((l) => {
+      const from = l.fromSlugs.length > 0
+        ? l.fromSlugs.map((s) => `<a href="#page-${escapeHtml(s)}">${escapeHtml(s)}</a>`).join(", ")
+        : escapeHtml(l.fromSlug);
+      const finalUrl = l.finalUrl && l.finalUrl !== l.url ? escapeHtml(l.finalUrl) : "—";
+      return `<tr>
+          <td>${from}</td>
+          <td>${l.text ? escapeHtml(l.text) : "—"}</td>
           <td><a href="${escapeHtml(l.url)}" target="_blank" rel="noopener">${escapeHtml(l.url)}</a></td>
           <td>${l.status ?? "—"}</td>
+          <td>${finalUrl}</td>
           <td>${escapeHtml(l.error ?? "")}</td>
-        </tr>`,
-    )
+        </tr>`;
+    })
     .join("");
 
   return `<section class="issues">
@@ -222,29 +389,28 @@ function issuesPanel(results: Results): string {
     ${
       slugsWithBadStatus.length > 0
         ? `<h3>Bad HTTP status (${slugsWithBadStatus.length})</h3>
-           <ul>${slugsWithBadStatus.map((p) => `<li><a href="#page-${escapeHtml(p.slug)}">${escapeHtml(p.slug)}</a> — ${p.status}</li>`).join("")}</ul>`
+           <ul>${slugsWithBadStatus.map((p) => `<li><a href="#page-${escapeHtml(p.slug)}">${escapeHtml(p.slug)}</a> — ${p.status}${extTag(p)}</li>`).join("")}</ul>`
         : ""
     }
     ${
       slugsWithAxe.length > 0
         ? `<h3>Critical / serious a11y (${slugsWithAxe.length} page${slugsWithAxe.length === 1 ? "" : "s"})</h3>
-           <ul>${slugsWithAxe.map((p) => `<li><a href="#page-${escapeHtml(p.slug)}">${escapeHtml(p.slug)}</a> — ${p.axe!.byImpact.critical} critical, ${p.axe!.byImpact.serious} serious</li>`).join("")}</ul>`
+           <ul>${slugsWithAxe.map((p) => `<li><a href="#page-${escapeHtml(p.slug)}">${escapeHtml(p.slug)}</a> — ${p.axe!.byImpact.critical} critical, ${p.axe!.byImpact.serious} serious${extTag(p)}</li>`).join("")}</ul>`
         : ""
     }
     ${
       slugsWithConsole.length > 0
         ? `<h3>JS / console errors (${slugsWithConsole.length} page${slugsWithConsole.length === 1 ? "" : "s"})</h3>
-           <ul>${slugsWithConsole.map((p) => `<li><a href="#page-${escapeHtml(p.slug)}">${escapeHtml(p.slug)}</a> — ${p.console.filter((c) => c.type === "error" || c.type === "pageerror").length} error${p.console.length === 1 ? "" : "s"}</li>`).join("")}</ul>`
+           <ul>${slugsWithConsole.map((p) => `<li><a href="#page-${escapeHtml(p.slug)}">${escapeHtml(p.slug)}</a> — ${p.console.filter((c) => c.type === "error" || c.type === "pageerror").length} error${p.console.length === 1 ? "" : "s"}${extTag(p)}</li>`).join("")}</ul>`
         : ""
     }
     ${
       broken.length > 0
         ? `<h3>Broken links (${broken.length})</h3>
            <table class="links-table">
-             <thead><tr><th>From</th><th>URL</th><th>Status</th><th>Error</th></tr></thead>
+             <thead><tr><th>From</th><th>Anchor</th><th>URL</th><th>Status</th><th>Final</th><th>Error</th></tr></thead>
              <tbody>${linkRows}</tbody>
-           </table>
-           ${broken.length > 30 ? `<p class="more">…${broken.length - 30} more in results.json</p>` : ""}`
+           </table>`
         : ""
     }
   </section>`;
@@ -255,6 +421,7 @@ function summaryBar(results: Results): string {
   const lh = s.lighthouseAverages;
   return `<div class="summary">
     <span class="sum-cell"><span class="sum-key">pages</span><span class="sum-val">${s.pages}</span></span>
+    ${s.externalPages > 0 ? `<span class="sum-cell"><span class="sum-key">third-party</span><span class="sum-val">${s.externalPages}</span></span>` : ""}
     ${lh ? `<span class="sum-cell"><span class="sum-key">avg perf</span><span class="sum-val">${lh.performance}</span></span>` : ""}
     ${lh ? `<span class="sum-cell"><span class="sum-key">avg a11y</span><span class="sum-val">${lh.accessibility}</span></span>` : ""}
     ${lh ? `<span class="sum-cell"><span class="sum-key">avg seo</span><span class="sum-val">${lh.seo}</span></span>` : ""}
@@ -343,6 +510,43 @@ const CSS = `
   .thumb-cap { font-size: 11px; color: #9ba2ad; text-align: center; font-variant-numeric: tabular-nums; }
   .thumb:hover img { border-color: #3b4250; }
   .more { color: #6b7280; font-size: 11px; margin: 6px 0 0; }
+  .details h4 { font-size: 12px; font-weight: 600; color: #c5cad3; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .chip-ext { color: #c084fc; border-color: rgba(192, 132, 252, 0.35); background: rgba(192, 132, 252, 0.10); }
+  .card-external { border-color: rgba(192, 132, 252, 0.35); }
+  .ext-banner { margin: 0 0 12px; padding: 8px 12px; font-size: 12px; color: #c084fc; background: rgba(192, 132, 252, 0.08); border: 1px solid rgba(192, 132, 252, 0.25); border-radius: 8px; }
+  .ext-tag { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+  .metrics-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 4px 0 4px; }
+  .metrics-table th, .metrics-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #23262d; }
+  .metrics-table th { color: #6b7280; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
+  .metrics-table .metric-name { color: #c5cad3; }
+  .metrics-table .metric-val, .metrics-table .metric-raw { font-variant-numeric: tabular-nums; text-align: right; }
+  .metric-good .metric-val, .metric-good .metric-raw { color: #10b981; }
+  .metric-ok .metric-val, .metric-ok .metric-raw { color: #f59e0b; }
+  .metric-bad .metric-val, .metric-bad .metric-raw { color: #ef4444; }
+  .opp-list, .diag-list, .audit-list { list-style: none; padding: 0; margin: 4px 0 0; font-size: 12px; color: #c5cad3; }
+  .opp { padding: 6px 0; border-bottom: 1px solid #1d2027; }
+  .opp-head strong { font-weight: 600; }
+  .opp-save { color: #f59e0b; font-variant-numeric: tabular-nums; margin-left: 6px; }
+  .opp-items { list-style: none; padding: 4px 0 0 12px; margin: 0; }
+  .opp-items li { margin: 2px 0; }
+  .opp-res { color: #9ba2ad; word-break: break-all; }
+  .opp-meta { color: #6b7280; font-variant-numeric: tabular-nums; }
+  .diag-list li { margin: 3px 0; }
+  .diag-key { color: #6b7280; text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; margin-right: 6px; }
+  .diag-list code { color: #93c5fd; word-break: break-all; }
+  .diag-more { color: #6b7280; }
+  .audit-list li { margin: 6px 0; }
+  .audit-val { color: #f59e0b; font-variant-numeric: tabular-nums; margin-left: 4px; }
+  .audit-desc { color: #9ba2ad; font-size: 11px; margin-top: 2px; }
+  .axe-head { margin-bottom: 6px; }
+  .axe-nodes { list-style: none; padding: 0 0 0 8px; margin: 0 0 6px; border-left: 2px solid #23262d; }
+  .axe-node { margin: 8px 0; }
+  .axe-target { display: block; color: #93c5fd; font-size: 11px; word-break: break-all; }
+  .axe-fix { color: #c5cad3; font-size: 11px; margin: 2px 0; white-space: pre-wrap; }
+  .axe-contrast { font-size: 11px; color: #f59e0b; font-variant-numeric: tabular-nums; }
+  .axe-html { background: #0e0f12; border: 1px solid #23262d; border-radius: 6px; padding: 6px 8px; margin: 4px 0 0; font-size: 11px; color: #c5cad3; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; border: 1px solid rgba(255,255,255,0.2); vertical-align: middle; margin-left: 2px; }
+  .console-stack { background: #0e0f12; border: 1px solid #23262d; border-radius: 6px; padding: 6px 8px; margin: 4px 0 0; font-size: 11px; color: #9ba2ad; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
   footer { color: #6b7280; font-size: 12px; margin-top: 32px; text-align: center; }
 `;
 
@@ -365,7 +569,7 @@ export function writeIndexReport(outDir: string, results: Results): void {
     <span><span class="dot dot-good"></span>≥ 90</span>
     <span><span class="dot dot-ok"></span>50–89</span>
     <span><span class="dot dot-bad"></span>&lt; 50</span>
-    <span>· click chips for full reports · machine data in <code>results.json</code></span>
+    <span>· click chips for full reports · averages exclude third-party pages · machine data in <code>results.json</code></span>
   </div>
   ${summaryBar(results)}
   ${issuesPanel(results)}

@@ -2,6 +2,8 @@
 
 One command. Crawls every internal page of a site, screenshots each at mobile/tablet/desktop in light + dark, runs Lighthouse + full axe-core a11y + SEO meta + security header + broken-link audits, and ships the lot as a folder + zip with a single dashboard `index.html`. Pass multiple URLs (or a `.txt` file) and you get a side-by-side comparison.
 
+The dashboard is **self-contained and deep by default**: millisecond Lighthouse metrics, perf opportunities with the offending resources, the actual LCP element, every axe node (selector + fix + contrast values), and full console stack traces are embedded directly in `index.html` — no need to open the side files. That makes the report enough, on its own, for a human or an agent to act on. Third-party pages reached via an off-origin redirect (e.g. an external booking host) are labelled and excluded from your averages.
+
 ## Usage
 
 No install — run straight from npm:
@@ -71,15 +73,15 @@ Full-page screenshots at light + dark colour schemes. Fonts are awaited via `doc
 
 Each page gets:
 
-- **Lighthouse** — Performance, Accessibility, Best Practices, SEO scores + full HTML report
-- **axe-core a11y scan** — every WCAG 2.0/2.1 A & AA + best-practice rule. Per-violation JSON with WCAG SC mapping, impact level, sample selector & HTML. Click the `axe` chip for the full JSON.
+- **Lighthouse** — Performance, Accessibility, Best Practices, SEO scores, **plus** the millisecond metrics (LCP, FCP, TBT, CLS, Speed Index, TTI, TTFB), perf **opportunities** with estimated ms/byte savings and the specific offending resources, **diagnostics** (the actual LCP element, layout-shift elements, third-party breakdown, main-thread work), and every other failing audit with Lighthouse's own remediation text — all embedded inline. Full per-page HTML report is still linked.
+- **axe-core a11y scan** — every WCAG 2.0/2.1 A & AA + best-practice rule. Each violation lists **every** affected node inline: CSS-selector target, the `failureSummary` fix, the HTML snippet, and structured check data (e.g. color-contrast fg/bg colours + actual vs required ratio). The complete raw dump stays in `a11y/<slug>.json`.
 - **SEO meta inventory** — title length, meta description, canonical, Open Graph, Twitter Card, `<h1>` count, alt-text coverage, JSON-LD types, lang, robots, viewport. Issues (e.g. "title too long", "no canonical") are flagged inline.
 - **Security headers** — scores CSP, HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-Content-Type-Options, COOP, CORP. Grades A–F.
-- **Console + page errors** — every JS error and warning logged during crawl, per page
-- **Broken-link scan** — HEAD-checks every outbound `<a href>` discovered during crawl. Reports 404s, redirect chains, unreachable hosts.
+- **Console + page errors** — every JS error and warning logged during crawl, with source location and the **full stack trace** for uncaught exceptions.
+- **Broken-link scan** — HEAD-checks every outbound `<a href>` discovered during crawl. Reports 404s, redirect chains, unreachable hosts, with the anchor text and every page that links to it.
 - **HTTP status** — status code from each crawled page's main navigation
 
-Scores show as chips in `index.html` (green ≥ 90, amber 50–89, red < 50). Click a chip to open the full per-page report.
+Scores show as chips in `index.html` (green ≥ 90, amber 50–89, red < 50). Expand any page's detail sections for the millisecond metrics, axe nodes, and console stacks — all inline.
 
 ## Machine-readable output
 
@@ -87,12 +89,13 @@ Every run writes `results.json` alongside `index.html`:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "site": { "label": "example.com", "url": "https://example.com" },
   "runStamp": "2026-05-16T14-25-11",
   "durationMs": 18234,
   "summary": {
     "pages": 24,
+    "externalPages": 1,
     "errors": { "console": 3, "pageErrors": 1 },
     "links": { "checked": 187, "broken": 4 },
     "axe": { "violations": 12, "nodes": 47 },
@@ -105,22 +108,34 @@ Every run writes `results.json` alongside `index.html`:
       "slug": "home",
       "title": "...",
       "status": 200,
-      "lighthouse": { "performance": 92, ... },
-      "axe": { "violationCount": 2, "byImpact": { "critical": 0, "serious": 1, ... }, "violations": [...] },
+      "external": false,
+      "lighthouse": {
+        "scores": { "performance": 92, "accessibility": 100, "bestPractices": 100, "seo": 100 },
+        "metrics": [ { "id": "largest-contentful-paint", "numericValue": 3200.4, "numericUnit": "millisecond", "displayValue": "3.2 s", "score": 0.5 }, ... ],
+        "opportunities": [ { "id": "render-blocking-resources", "savingsMs": 1240, "savingsBytes": 32000, "description": "...", "items": [ { "url": "...", "wastedMs": 800 } ] }, ... ],
+        "diagnostics": { "lcpElement": { "selector": "main > h1.hero", "snippet": "..." }, "thirdParty": [...], "mainThreadWorkMs": 2100, ... },
+        "failingAudits": [ { "id": "color-contrast", "title": "...", "description": "...", "score": 0 }, ... ]
+      },
+      "axe": { "violationCount": 2, "nodeCount": 5, "byImpact": { "critical": 0, "serious": 1, ... },
+        "violations": [ { "id": "color-contrast", "impact": "serious", "nodeCount": 2, "nodesTruncated": false,
+          "nodes": [ { "target": "a.link", "html": "...", "failureSummary": "...", "checks": [ { "id": "color-contrast", "message": "...", "data": { "fgColor": "#adefd1", "bgColor": "#ffffff", "contrastRatio": 1.3, "expectedContrastRatio": "4.5:1" } } ] } ] } ] },
       "seo": { "title": "...", "titleLength": 42, "h1Count": 1, ... },
       "security": { "score": 65, "grade": "C", "checks": [...] },
-      "console": [...]
+      "console": [ { "type": "pageerror", "text": "...", "stack": "..." } ]
     }
   ],
-  "links": [ { "fromSlug": "home", "url": "...", "status": 200, "ok": true, ... } ]
+  "links": [ { "fromSlug": "home", "fromSlugs": ["home", "about"], "text": "Read the study", "url": "...", "status": 403, "ok": false, ... } ]
 }
 ```
 
-Pipe it through `jq` for ad-hoc scripting:
+Averages (`lighthouseAverages`, `securityAverage`, `axe`) reflect your own pages only — pages flagged `external: true` are excluded. Pipe it through `jq` for ad-hoc scripting:
 
 ```bash
 jq '.summary' ~/Downloads/crawlshot-*/results.json
-jq '.pages[] | select(.axe.violationCount > 0) | .slug' results.json
+# slowest LCP across own pages
+jq -r '.pages[] | select(.external|not) | [.slug, (.lighthouse.metrics[]? | select(.id=="largest-contentful-paint") | .numericValue)] | @tsv' results.json
+# every axe node selector to fix
+jq -r '.pages[].axe?.violations[]?.nodes[]?.target' results.json
 jq '.links[] | select(.ok == false)' results.json
 ```
 
@@ -178,6 +193,7 @@ crawlshot ./prospects.txt --max-pages 20 --concurrency 6
 - Dismisses cookie/consent banners by clicking Accept (OneTrust, Cookiebot, Osano, Quantcast, Iubenda, Didomi, CookieYes, TrustArc, Evidon, HubSpot + multilingual text fallback); hides any that resist as a backup
 - 30s timeout per page; failures are logged and skipped, never fatal
 - HEAD checks fall back to GET for servers that 405/501 on HEAD
+- Flags pages that redirect off-origin as third-party — labelled in the report and excluded from your averages, so an external host's scores never skew your own
 
 ## Requirements
 

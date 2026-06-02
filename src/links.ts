@@ -3,9 +3,11 @@ import type { LinkCheck } from "./util";
 const TIMEOUT_MS = 10_000;
 const DEFAULT_CONCURRENCY = 8;
 
-type Source = { fromSlug: string; url: string };
+type Source = { fromSlug: string; url: string; text?: string };
+type UniqueSource = { fromSlug: string; fromSlugs: string[]; text?: string; url: string };
 
-async function checkOne(fromSlug: string, url: string, sameOrigin: (u: string) => boolean): Promise<LinkCheck> {
+async function checkOne(src: UniqueSource, sameOrigin: (u: string) => boolean): Promise<LinkCheck> {
+  const { url, fromSlug, fromSlugs, text } = src;
   const internal = sameOrigin(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -23,6 +25,8 @@ async function checkOne(fromSlug: string, url: string, sameOrigin: (u: string) =
     }
     return {
       fromSlug,
+      fromSlugs,
+      text,
       url,
       status: res.status,
       ok: res.ok,
@@ -33,6 +37,8 @@ async function checkOne(fromSlug: string, url: string, sameOrigin: (u: string) =
   } catch (err) {
     return {
       fromSlug,
+      fromSlugs,
+      text,
       url,
       status: null,
       ok: false,
@@ -51,12 +57,23 @@ export async function checkLinks(
   baseOrigin: string,
   concurrency = DEFAULT_CONCURRENCY,
 ): Promise<LinkCheck[]> {
-  // Dedupe by URL but keep first source slug
-  const seen = new Map<string, string>();
+  // Dedupe by URL: accumulate every referring page, keep the first anchor text.
+  const seen = new Map<string, { fromSlugs: string[]; text?: string }>();
   for (const s of sources) {
-    if (!seen.has(s.url)) seen.set(s.url, s.fromSlug);
+    const e = seen.get(s.url);
+    if (e) {
+      if (!e.fromSlugs.includes(s.fromSlug)) e.fromSlugs.push(s.fromSlug);
+      if (e.text === undefined && s.text) e.text = s.text;
+    } else {
+      seen.set(s.url, { fromSlugs: [s.fromSlug], text: s.text });
+    }
   }
-  const unique: Source[] = Array.from(seen.entries()).map(([url, fromSlug]) => ({ fromSlug, url }));
+  const unique: UniqueSource[] = Array.from(seen.entries()).map(([url, v]) => ({
+    url,
+    fromSlug: v.fromSlugs[0] ?? "",
+    fromSlugs: v.fromSlugs,
+    text: v.text,
+  }));
 
   const sameOrigin = (u: string): boolean => {
     try {
@@ -73,7 +90,7 @@ export async function checkLinks(
       const i = next++;
       if (i >= unique.length) return;
       const s = unique[i]!;
-      results[i] = await checkOne(s.fromSlug, s.url, sameOrigin);
+      results[i] = await checkOne(s, sameOrigin);
     }
   }
 
