@@ -6,7 +6,7 @@ import fs from "fs";
 import os from "os";
 import net from "net";
 import { parseArgs } from "node:util";
-import { runLighthouse, type Scores } from "./lighthouse";
+import { runLighthouse, type LighthouseDetail } from "./lighthouse";
 import { writeIndexReport } from "./report";
 import {
   VIEWPORTS,
@@ -265,7 +265,7 @@ type CrawlOutput = {
   seo: Map<string, SeoMeta>;
   security: Map<string, SecurityHeaders>;
   consoleEvents: Map<string, ConsoleEvent[]>;
-  outboundLinks: { fromSlug: string; url: string }[];
+  outboundLinks: { fromSlug: string; url: string; text?: string }[];
   baseOrigin: string;
 };
 
@@ -281,7 +281,7 @@ function attachConsoleListeners(page: Page, sink: ConsoleEvent[]): () => void {
     });
   };
   const onPageError = (err: Error) => {
-    sink.push({ type: "pageerror", text: err.message });
+    sink.push({ type: "pageerror", text: err.message, stack: err.stack });
   };
   page.on("console", onConsole);
   page.on("pageerror", onPageError);
@@ -318,7 +318,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
   const seo = new Map<string, SeoMeta>();
   const security = new Map<string, SecurityHeaders>();
   const consoleEvents = new Map<string, ConsoleEvent[]>();
-  const outboundLinks: { fromSlug: string; url: string }[] = [];
+  const outboundLinks: { fromSlug: string; url: string; text?: string }[] = [];
 
   const browser = await chromium.launch({
     args: ["--ignore-certificate-errors"],
@@ -371,9 +371,9 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
 
       const linkData = await page.evaluate(`(() => {
         const origin = ${JSON.stringify(resolvedOrigin)};
-        const all = Array.from(document.querySelectorAll("a[href]"))
-          .map((el) => el.href)
-          .filter((href) => Boolean(href));
+        const anchors = Array.from(document.querySelectorAll("a[href]"))
+          .map((el) => ({ href: el.href, text: (el.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 120) }))
+          .filter((a) => Boolean(a.href));
 
         const norm = (href) => {
           try {
@@ -385,24 +385,27 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         };
 
         const internalForQueue = [];
-        const outbound = [];
-        for (const raw of all) {
-          const n = norm(raw);
+        const outboundMap = {};
+        for (const a of anchors) {
+          const n = norm(a.href);
           if (!n) continue;
           let parsed;
           try { parsed = new URL(n.url); } catch { continue; }
           const isAsset = /\\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|xml|json|ico|txt|css|js|mjs|map)$/i.test(parsed.pathname);
-          const isMail = /^(mailto|tel|javascript):/i.test(raw);
+          const isMail = /^(mailto|tel|javascript):/i.test(a.href);
           if (isMail) continue;
           if (origin && parsed.origin === origin && !isAsset) {
             internalForQueue.push(n.pathOnly);
           }
           if (/^https?:$/i.test(parsed.protocol) && !isAsset) {
-            outbound.push(n.url);
+            if (!(n.url in outboundMap)) outboundMap[n.url] = a.text;
           }
         }
-        return { internalForQueue: Array.from(new Set(internalForQueue)), outbound: Array.from(new Set(outbound)) };
-      })()`) as { internalForQueue: string[]; outbound: string[] };
+        return {
+          internalForQueue: Array.from(new Set(internalForQueue)),
+          outbound: Object.keys(outboundMap).map((url) => ({ url, text: outboundMap[url] })),
+        };
+      })()`) as { internalForQueue: string[]; outbound: { url: string; text: string }[] };
 
       let newCount = 0;
       const atDepthLimit = opts.maxDepth !== null && item.depth >= opts.maxDepth;
@@ -419,7 +422,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         newCount++;
       }
       for (const out of linkData.outbound) {
-        outboundLinks.push({ fromSlug: slug, url: out });
+        outboundLinks.push({ fromSlug: slug, url: out.url, text: out.text || undefined });
       }
 
       console.log(
@@ -599,15 +602,15 @@ async function runSite(
 
   const axeResults = await shoot(crawled.pages, outDir, !options.noAxe, options.concurrency);
 
-  let scores: Map<string, Scores> | null = null;
+  let lighthouse: Map<string, LighthouseDetail> | null = null;
   if (!options.noLighthouse && crawled.pages.length > 0) {
     console.log("\nRunning Lighthouse...\n");
     try {
       const port = await getFreePort();
-      scores = await runLighthouse(crawled.pages, port, outDir);
+      lighthouse = await runLighthouse(crawled.pages, port, outDir);
     } catch (err) {
       console.warn(`Lighthouse phase failed: ${(err as Error).message}`);
-      scores = null;
+      lighthouse = null;
     }
   }
 
@@ -639,7 +642,8 @@ async function runSite(
     durationMs: Date.now() - startedAt,
     pages: crawled.pages,
     pageStatus: crawled.pageStatus,
-    scores,
+    lighthouse,
+    baseOrigin: crawled.baseOrigin,
     axe: axeResults,
     seo: crawled.seo,
     security: crawled.security,
@@ -656,7 +660,7 @@ async function runSite(
     await zipDir(outDir, zipPath);
   }
 
-  const lhSummary = scores ? `, Lighthouse on ${scores.size}` : ", Lighthouse skipped";
+  const lhSummary = lighthouse ? `, Lighthouse on ${lighthouse.size}` : ", Lighthouse skipped";
   const axeSummary = !options.noAxe ? `, axe on ${axeResults.size}` : ", axe skipped";
   const linksSummary = links.length > 0 ? `, ${links.length} links (${links.filter((l) => !l.ok).length} broken)` : "";
   console.log(
