@@ -12,6 +12,240 @@ export type Scores = {
   seo: number;
 };
 
+// A single Core-Web-Vital / timing metric, with its raw numeric value (ms, or
+// unitless for CLS) so an agent can reason about the actual cost, not just a 0-100.
+export type LighthouseMetric = {
+  id: string;
+  title: string;
+  numericValue: number | null;
+  numericUnit: string | null;
+  displayValue: string | null;
+  score: number | null; // 0..1
+};
+
+export type LighthouseOpportunityItem = {
+  url?: string;
+  wastedMs?: number;
+  wastedBytes?: number;
+  totalBytes?: number;
+};
+
+// A perf opportunity (render-blocking, unused JS, oversized images, …) with the
+// estimated savings and the specific offending resources.
+export type LighthouseOpportunity = {
+  id: string;
+  title: string;
+  description: string; // Lighthouse's own remediation guidance (markdown)
+  savingsMs: number | null;
+  savingsBytes: number | null;
+  displayValue: string | null;
+  items: LighthouseOpportunityItem[];
+};
+
+// Any failing audit not already surfaced as a metric/opportunity. `description`
+// is Lighthouse's verbatim fix guidance — the most agent-actionable field.
+export type LighthouseAudit = {
+  id: string;
+  title: string;
+  description: string;
+  score: number | null;
+  displayValue: string | null;
+};
+
+export type LighthouseDiagnostics = {
+  lcpElement: { selector: string; snippet: string } | null;
+  layoutShiftElements: { selector: string; snippet: string; score: number | null }[];
+  thirdParty: { entity: string; blockingMs: number | null; transferBytes: number | null }[];
+  mainThreadWorkMs: number | null;
+  bootupTimeMs: number | null;
+  domSize: number | null;
+};
+
+export type LighthouseDetail = {
+  scores: Scores;
+  metrics: LighthouseMetric[];
+  opportunities: LighthouseOpportunity[];
+  diagnostics: LighthouseDiagnostics;
+  failingAudits: LighthouseAudit[];
+};
+
+// --- Minimal local shape of the Lighthouse result (lhr) ----------------------
+// We read a handful of fields out of an elaborate, version-volatile union type.
+// Casting `result.lhr` to this keeps our code type-safe and resilient to LH minor
+// releases without depending on LH's exported internal types.
+type RawAuditItem = Record<string, unknown>;
+type RawAudit = {
+  id?: string;
+  title?: string;
+  description?: string;
+  score?: number | null;
+  scoreDisplayMode?: string;
+  numericValue?: number;
+  numericUnit?: string;
+  displayValue?: string;
+  details?: {
+    type?: string;
+    overallSavingsMs?: number;
+    overallSavingsBytes?: number;
+    items?: RawAuditItem[];
+  };
+};
+type RawLhr = {
+  categories: Record<string, { score?: number | null } | undefined>;
+  audits: Record<string, RawAudit | undefined>;
+};
+
+const METRIC_IDS = [
+  "first-contentful-paint",
+  "largest-contentful-paint",
+  "total-blocking-time",
+  "cumulative-layout-shift",
+  "speed-index",
+  "interactive",
+  "max-potential-fid",
+  "server-response-time",
+];
+
+function num(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+function str(v: unknown): string | null {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function scoreOf(a: RawAudit): number | null {
+  return typeof a.score === "number" ? a.score : null;
+}
+function itemsOf(a: RawAudit | undefined): RawAuditItem[] {
+  const items = a?.details?.items;
+  return Array.isArray(items) ? items : [];
+}
+
+// Recursively find the first Lighthouse "node" value (element pointer) within an
+// audit's details — handles LCP-element / layout-shift items regardless of nesting.
+function findNodeValue(value: unknown): { selector: string; snippet: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  if (obj.type === "node" && (typeof obj.selector === "string" || typeof obj.snippet === "string")) {
+    return { selector: str(obj.selector) ?? "", snippet: str(obj.snippet) ?? "" };
+  }
+  for (const v of Object.values(obj)) {
+    if (Array.isArray(v)) {
+      for (const el of v) {
+        const found = findNodeValue(el);
+        if (found) return found;
+      }
+    } else if (v && typeof v === "object") {
+      const found = findNodeValue(v);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function entityName(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return str(o.text) ?? str(o.name) ?? "";
+  }
+  return "";
+}
+
+function buildDiagnostics(audits: Record<string, RawAudit | undefined>): LighthouseDiagnostics {
+  const lcpEl = audits["largest-contentful-paint-element"];
+  const lcpElement = lcpEl?.details ? findNodeValue(lcpEl.details) : null;
+
+  const layoutShiftElements = itemsOf(audits["layout-shift-elements"])
+    .slice(0, 8)
+    .map((it) => {
+      const node = findNodeValue(it);
+      return { selector: node?.selector ?? "", snippet: node?.snippet ?? "", score: num(it.score) };
+    })
+    .filter((e) => e.selector || e.snippet);
+
+  const thirdParty = itemsOf(audits["third-party-summary"])
+    .slice(0, 10)
+    .map((it) => ({
+      entity: entityName(it.entity),
+      blockingMs: num(it.blockingTime),
+      transferBytes: num(it.transferSize),
+    }))
+    .filter((e) => e.entity);
+
+  return {
+    lcpElement,
+    layoutShiftElements,
+    thirdParty,
+    mainThreadWorkMs: num(audits["mainthread-work-breakdown"]?.numericValue),
+    bootupTimeMs: num(audits["bootup-time"]?.numericValue),
+    domSize: num(audits["dom-size"]?.numericValue),
+  };
+}
+
+export function buildLighthouseDetail(lhr: RawLhr, scores: Scores): LighthouseDetail {
+  const audits = lhr.audits ?? {};
+  const metricIds = new Set(METRIC_IDS);
+
+  const metrics: LighthouseMetric[] = [];
+  for (const id of METRIC_IDS) {
+    const a = audits[id];
+    if (!a) continue;
+    metrics.push({
+      id,
+      title: str(a.title) ?? id,
+      numericValue: num(a.numericValue),
+      numericUnit: str(a.numericUnit),
+      displayValue: str(a.displayValue),
+      score: scoreOf(a),
+    });
+  }
+
+  const opportunities: LighthouseOpportunity[] = [];
+  const capturedAsOpp = new Set<string>();
+  for (const [id, a] of Object.entries(audits)) {
+    if (!a) continue;
+    const score = scoreOf(a);
+    if (a.details?.type !== "opportunity" || score === null || score >= 1) continue;
+    opportunities.push({
+      id,
+      title: str(a.title) ?? id,
+      description: str(a.description) ?? "",
+      savingsMs: num(a.details.overallSavingsMs),
+      savingsBytes: num(a.details.overallSavingsBytes),
+      displayValue: str(a.displayValue),
+      items: itemsOf(a)
+        .slice(0, 8)
+        .map((it) => ({
+          url: str(it.url) ?? undefined,
+          wastedMs: num(it.wastedMs) ?? undefined,
+          wastedBytes: num(it.wastedBytes) ?? undefined,
+          totalBytes: num(it.totalBytes) ?? undefined,
+        })),
+    });
+    capturedAsOpp.add(id);
+  }
+  opportunities.sort((x, y) => (y.savingsMs ?? 0) - (x.savingsMs ?? 0));
+
+  const failingAudits: LighthouseAudit[] = [];
+  for (const [id, a] of Object.entries(audits)) {
+    if (!a || metricIds.has(id) || capturedAsOpp.has(id)) continue;
+    const mode = a.scoreDisplayMode;
+    if (mode !== "binary" && mode !== "numeric") continue;
+    const score = scoreOf(a);
+    if (score === null || score >= 0.9) continue;
+    failingAudits.push({
+      id,
+      title: str(a.title) ?? id,
+      description: str(a.description) ?? "",
+      score,
+      displayValue: str(a.displayValue),
+    });
+  }
+  failingAudits.sort((x, y) => (x.score ?? 1) - (y.score ?? 1));
+
+  return { scores, metrics, opportunities, diagnostics: buildDiagnostics(audits), failingAudits };
+}
+
 // Jittered delay between Lighthouse audits. Lighthouse fires many requests per
 // page; back-to-back audits without a breather will trip rate-limiters on
 // small/shared hosts (Vercel, Wix, low-tier shared shosts), producing all-zero
@@ -27,12 +261,12 @@ export async function runLighthouse(
   pages: PageRecord[],
   port: number,
   outDir: string,
-): Promise<Map<string, Scores>> {
+): Promise<Map<string, LighthouseDetail>> {
   // Lighthouse v11+ is ESM-only; we're built to CJS via tsup. Dynamic import
   // keeps the build config untouched and resolves the ESM at runtime under Node 20+.
   const { default: lighthouse } = await import("lighthouse");
 
-  const scores = new Map<string, Scores>();
+  const details = new Map<string, LighthouseDetail>();
   const lhDir = path.join(outDir, "lighthouse");
   fs.mkdirSync(lhDir, { recursive: true });
 
@@ -79,7 +313,8 @@ export async function runLighthouse(
         const html = Array.isArray(result.report) ? result.report[0]! : result.report;
         fs.writeFileSync(path.join(lhDir, `${rec.slug}.html`), html);
 
-        const cats = result.lhr.categories;
+        const lhr = result.lhr as unknown as RawLhr;
+        const cats = lhr.categories;
         const score = (key: string): number => {
           const raw = cats[key]?.score;
           return raw == null ? 0 : Math.round(raw * 100);
@@ -91,7 +326,7 @@ export async function runLighthouse(
           bestPractices: score("best-practices"),
           seo: score("seo"),
         };
-        scores.set(rec.slug, s);
+        details.set(rec.slug, buildLighthouseDetail(lhr, s));
         console.log(
           `  ✓ ${rec.slug} — perf ${s.performance} / a11y ${s.accessibility} / bp ${s.bestPractices} / seo ${s.seo}`,
         );
@@ -103,5 +338,5 @@ export async function runLighthouse(
     await browser.close();
   }
 
-  return scores;
+  return details;
 }
