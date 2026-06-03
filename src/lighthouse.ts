@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium, type Browser } from "playwright";
 import path from "path";
 import fs from "fs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -252,9 +252,27 @@ export function buildLighthouseDetail(lhr: RawLhr, scores: Scores): LighthouseDe
 // scores. 2–4s with jitter keeps per-server QPS sane.
 const AUDIT_DELAY_MIN_MS = 2000;
 const AUDIT_DELAY_MAX_MS = 4000;
+const MAX_LIGHTHOUSE_ATTEMPTS = 2;
 
 function auditDelayMs(): number {
   return Math.floor(Math.random() * (AUDIT_DELAY_MAX_MS - AUDIT_DELAY_MIN_MS + 1)) + AUDIT_DELAY_MIN_MS;
+}
+
+function categoryScores(lhr: RawLhr): Scores | null {
+  const cats = lhr.categories;
+  const score = (key: string): number | null => {
+    const raw = cats[key]?.score;
+    return raw == null ? null : Math.round(raw * 100);
+  };
+
+  const performance = score("performance");
+  const accessibility = score("accessibility");
+  const bestPractices = score("best-practices");
+  const seo = score("seo");
+  if (performance === null || accessibility === null || bestPractices === null || seo === null) {
+    return null;
+  }
+  return { performance, accessibility, bestPractices, seo };
 }
 
 export async function runLighthouse(
@@ -270,30 +288,37 @@ export async function runLighthouse(
   const lhDir = path.join(outDir, "lighthouse");
   fs.mkdirSync(lhDir, { recursive: true });
 
-  const browser = await chromium.launch({
-    args: [`--remote-debugging-port=${port}`],
-  });
+  const launchBrowser = async (): Promise<Browser> => {
+    const browser = await chromium.launch({
+      args: [`--remote-debugging-port=${port}`],
+    });
 
-  if (pages.length > 0) {
-    const warmupPage = await browser.newPage();
-    try {
-      const baseOrigin = new URL(pages[0]!.url).origin;
-      await warmupPage.goto(baseOrigin, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await warmupPage.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
-      await dismissCookieBanner(warmupPage);
-    } catch {
-      // non-fatal: lighthouse still runs, just may see the banner
-    } finally {
-      await warmupPage.close().catch(() => {});
-    }
-  }
-
-  try {
-    let isFirst = true;
-    for (const rec of pages) {
-      if (!isFirst) await sleep(auditDelayMs());
-      isFirst = false;
+    if (pages.length > 0) {
+      const warmupPage = await browser.newPage();
       try {
+        const baseOrigin = new URL(pages[0]!.url).origin;
+        await warmupPage.goto(baseOrigin, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await warmupPage.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+        await dismissCookieBanner(warmupPage);
+      } catch {
+        // non-fatal: lighthouse still runs, just may see the banner
+      } finally {
+        await warmupPage.close().catch(() => {});
+      }
+    }
+    return browser;
+  };
+
+  let isFirst = true;
+  for (const rec of pages) {
+    if (!isFirst) await sleep(auditDelayMs());
+    isFirst = false;
+
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= MAX_LIGHTHOUSE_ATTEMPTS; attempt++) {
+      let browser: Browser | null = null;
+      try {
+        browser = await launchBrowser();
         const result = await lighthouse(
           rec.url,
           {
@@ -306,36 +331,38 @@ export async function runLighthouse(
         );
 
         if (!result) {
-          console.warn(`  ✗ ${rec.slug} — no Lighthouse result`);
-          continue;
+          throw new Error("no Lighthouse result");
         }
 
         const html = Array.isArray(result.report) ? result.report[0]! : result.report;
         fs.writeFileSync(path.join(lhDir, `${rec.slug}.html`), html);
 
         const lhr = result.lhr as unknown as RawLhr;
-        const cats = lhr.categories;
-        const score = (key: string): number => {
-          const raw = cats[key]?.score;
-          return raw == null ? 0 : Math.round(raw * 100);
-        };
+        const s = categoryScores(lhr);
+        if (!s) {
+          throw new Error("missing Lighthouse category scores");
+        }
 
-        const s: Scores = {
-          performance: score("performance"),
-          accessibility: score("accessibility"),
-          bestPractices: score("best-practices"),
-          seo: score("seo"),
-        };
         details.set(rec.slug, buildLighthouseDetail(lhr, s));
         console.log(
           `  ✓ ${rec.slug} — perf ${s.performance} / a11y ${s.accessibility} / bp ${s.bestPractices} / seo ${s.seo}`,
         );
+        lastError = null;
+        break;
       } catch (err) {
-        console.warn(`  ✗ ${rec.slug} — Lighthouse failed: ${(err as Error).message}`);
+        lastError = err as Error;
+        if (attempt < MAX_LIGHTHOUSE_ATTEMPTS) {
+          console.warn(`  ↻ ${rec.slug} — Lighthouse retry ${attempt + 1}/${MAX_LIGHTHOUSE_ATTEMPTS}: ${lastError.message}`);
+          await sleep(auditDelayMs());
+        }
+      } finally {
+        await browser?.close().catch(() => {});
       }
     }
-  } finally {
-    await browser.close();
+
+    if (lastError) {
+      console.warn(`  ✗ ${rec.slug} — Lighthouse failed: ${lastError.message}`);
+    }
   }
 
   return details;
