@@ -112,6 +112,7 @@ export type RunOptions = {
   include: RegExp | null;
   exclude: RegExp | null;
   concurrency: number;
+  authStorage: string | null;
   video: boolean;
   videoPages: RegExp | null;
   videoViewports: string[];
@@ -119,4 +120,3 @@ export type RunOptions = {
 };
 
 export const DEFAULT_CONCURRENCY = 4;
-

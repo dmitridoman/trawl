@@ -1,8 +1,9 @@
-import { chromium, type Browser } from "playwright";
+import { chromium, type Page } from "playwright";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { PageRecord } from "./util";
+import type { PageRecord, RunOptions } from "./util";
 import { dismissCookieBanner } from "./cookies";
 
 export type Scores = {
@@ -279,6 +280,7 @@ export async function runLighthouse(
   pages: PageRecord[],
   port: number,
   outDir: string,
+  options: Pick<RunOptions, "authStorage">,
 ): Promise<Map<string, LighthouseDetail>> {
   // Lighthouse v11+ is ESM-only; we're built to CJS via tsup. Dynamic import
   // keeps the build config untouched and resolves the ESM at runtime under Node 20+.
@@ -288,25 +290,49 @@ export async function runLighthouse(
   const lhDir = path.join(outDir, "lighthouse");
   fs.mkdirSync(lhDir, { recursive: true });
 
-  const launchBrowser = async (): Promise<Browser> => {
+  const launchBrowser = async (): Promise<{ newPage: () => Promise<Page>; close: () => Promise<void> }> => {
+    if (options.authStorage) {
+      const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "crawlshot-lighthouse-"));
+      const context = await chromium.launchPersistentContext(userDataDir, {
+        args: [`--remote-debugging-port=${port}`],
+        ignoreHTTPSErrors: true,
+        storageState: options.authStorage,
+      });
+      const launched = {
+        newPage: () => context.newPage(),
+        close: async () => {
+          await context.close();
+          fs.rmSync(userDataDir, { recursive: true, force: true });
+        },
+      };
+      await warmupLighthouseBrowser(launched);
+      return launched;
+    }
+
     const browser = await chromium.launch({
       args: [`--remote-debugging-port=${port}`],
     });
+    const launched = {
+      newPage: () => browser.newPage(),
+      close: () => browser.close(),
+    };
+    await warmupLighthouseBrowser(launched);
+    return launched;
+  };
 
-    if (pages.length > 0) {
-      const warmupPage = await browser.newPage();
-      try {
-        const baseOrigin = new URL(pages[0]!.url).origin;
-        await warmupPage.goto(baseOrigin, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await warmupPage.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
-        await dismissCookieBanner(warmupPage);
-      } catch {
-        // non-fatal: lighthouse still runs, just may see the banner
-      } finally {
-        await warmupPage.close().catch(() => {});
-      }
+  const warmupLighthouseBrowser = async (launched: { newPage: () => Promise<Page> }): Promise<void> => {
+    if (pages.length === 0) return;
+    const warmupPage = await launched.newPage();
+    try {
+      const baseOrigin = new URL(pages[0]!.url).origin;
+      await warmupPage.goto(baseOrigin, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await warmupPage.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+      await dismissCookieBanner(warmupPage);
+    } catch {
+      // non-fatal: lighthouse still runs, just may see the banner
+    } finally {
+      await warmupPage.close().catch(() => {});
     }
-    return browser;
   };
 
   let isFirst = true;
@@ -316,9 +342,9 @@ export async function runLighthouse(
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= MAX_LIGHTHOUSE_ATTEMPTS; attempt++) {
-      let browser: Browser | null = null;
+      let launched: { close: () => Promise<void> } | null = null;
       try {
-        browser = await launchBrowser();
+        launched = await launchBrowser();
         const result = await lighthouse(
           rec.url,
           {
@@ -356,7 +382,7 @@ export async function runLighthouse(
           await sleep(auditDelayMs());
         }
       } finally {
-        await browser?.close().catch(() => {});
+        await launched?.close().catch(() => {});
       }
     }
 

@@ -75,6 +75,7 @@ export async function recordVideos(
         let ctx;
         try {
           ctx = await browser.newContext({
+            storageState: opts.authStorage ?? undefined,
             viewport: { width: vp.width, height: vp.height },
             colorScheme: scheme,
             recordVideo: { dir: tmpDir, size: { width: vp.width, height: vp.height } },

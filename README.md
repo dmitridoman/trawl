@@ -13,6 +13,7 @@ No install — run straight from npm:
 npx crawlshot http://localhost:3000
 npx crawlshot https://example.com
 npx crawlshot https://example.com --max-pages 50 --concurrency 6
+npx crawlshot https://staging.example.com --auth-storage ./auth.json
 
 # multi-site comparison
 npx crawlshot https://stripe.com https://plaid.com https://truelayer.com
@@ -153,9 +154,23 @@ Scope:
   --include <regex>      only crawl URLs whose full URL matches this regex
   --exclude <regex>      skip URLs whose full URL matches this regex
 
+Auth:
+  --auth-storage <path>  Playwright storageState JSON to use for authenticated crawls
+
 Performance:
   --concurrency <N>      parallel pages in flight (default 4)
 ```
+
+## Authenticated crawls
+
+Pass a Playwright `storageState` file when the target site needs login cookies or localStorage:
+
+```bash
+npx playwright codegen https://staging.example.com --save-storage=auth.json
+crawlshot https://staging.example.com --auth-storage ./auth.json
+```
+
+`--auth-storage` applies to the whole run, including crawl discovery, screenshots, axe, videos, Lighthouse, and every site in multi-site comparison mode.
 
 ## Multi-site comparison
 

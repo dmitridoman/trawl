@@ -101,6 +101,9 @@ Scope flags:
   --include <regex>      only crawl URLs whose full URL matches this regex
   --exclude <regex>      skip URLs whose full URL matches this regex
 
+Auth:
+  --auth-storage <path>  Playwright storageState JSON to use for authenticated crawls
+
 Performance:
   --concurrency <N>      parallel pages in flight (default ${DEFAULT_CONCURRENCY})
 
@@ -131,6 +134,7 @@ function parseCli(): ParsedCli {
         "max-depth":      { type: "string" },
         "include":        { type: "string" },
         "exclude":        { type: "string" },
+        "auth-storage":   { type: "string" },
         "concurrency":    { type: "string" },
         "video":          { type: "boolean" },
         "video-pages":    { type: "string" },
@@ -173,6 +177,23 @@ function parseCli(): ParsedCli {
     }
   };
 
+  const authStorage = (raw: string | undefined): string | null => {
+    if (raw === undefined) return null;
+    const resolved = path.resolve(raw);
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) {
+        console.error(`crawlshot: --auth-storage must point to a file, got ${raw}`);
+        process.exit(1);
+      }
+      JSON.parse(fs.readFileSync(resolved, "utf8"));
+    } catch (err) {
+      console.error(`crawlshot: --auth-storage is not a readable JSON file: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    return resolved;
+  };
+
   const videoEnabled = Boolean(values["video"]);
 
   const rawViewports = (values["video-viewport"] as string[] | undefined) ?? [];
@@ -204,6 +225,7 @@ function parseCli(): ParsedCli {
     include:      re(values["include"], "include"),
     exclude:      re(values["exclude"], "exclude"),
     concurrency:  num(values["concurrency"], "concurrency") ?? DEFAULT_CONCURRENCY,
+    authStorage:  authStorage(values["auth-storage"]),
     video:        videoEnabled,
     videoPages:   re(values["video-pages"], "video-pages"),
     videoViewports,
@@ -443,6 +465,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
   async function worker(): Promise<void> {
     const ctx = await browser.newContext({
       ignoreHTTPSErrors: true,
+      storageState: opts.authStorage ?? undefined,
       viewport: { width: 1440, height: 900 },
     });
     const page = await ctx.newPage();
@@ -489,7 +512,12 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
 
 type ShootJob = { rec: PageRecord; scheme: typeof COLOR_SCHEMES[number]; vp: typeof VIEWPORTS[number] };
 
-async function shoot(pages: PageRecord[], outDir: string, runAxeScan: boolean, concurrency: number): Promise<Map<string, AxeSummary>> {
+async function shoot(
+  pages: PageRecord[],
+  outDir: string,
+  runAxeScan: boolean,
+  options: Pick<RunOptions, "authStorage" | "concurrency">,
+): Promise<Map<string, AxeSummary>> {
   const browser: Browser = await chromium.launch({
     args: ["--ignore-certificate-errors"],
   });
@@ -524,6 +552,7 @@ async function shoot(pages: PageRecord[], outDir: string, runAxeScan: boolean, c
       try {
         ctx = await browser.newContext({
           ignoreHTTPSErrors: true,
+          storageState: options.authStorage ?? undefined,
           viewport: { width: vp.width, height: vp.height },
           colorScheme: scheme,
           reducedMotion: "reduce",
@@ -564,7 +593,7 @@ async function shoot(pages: PageRecord[], outDir: string, runAxeScan: boolean, c
     }
   }
 
-  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, jobs.length)) }, () => worker());
+  const workers = Array.from({ length: Math.max(1, Math.min(options.concurrency, jobs.length)) }, () => worker());
   await Promise.all(workers);
   await browser.close();
   return axeResults;
@@ -600,14 +629,14 @@ async function runSite(
   const crawled = await crawl(url, options);
   console.log(`\nFound ${crawled.pages.length} page(s). Shooting...\n`);
 
-  const axeResults = await shoot(crawled.pages, outDir, !options.noAxe, options.concurrency);
+  const axeResults = await shoot(crawled.pages, outDir, !options.noAxe, options);
 
   let lighthouse: Map<string, LighthouseDetail> | null = null;
   if (!options.noLighthouse && crawled.pages.length > 0) {
     console.log("\nRunning Lighthouse...\n");
     try {
       const port = await getFreePort();
-      lighthouse = await runLighthouse(crawled.pages, port, outDir);
+      lighthouse = await runLighthouse(crawled.pages, port, outDir, options);
     } catch (err) {
       console.warn(`Lighthouse phase failed: ${(err as Error).message}`);
       lighthouse = null;
