@@ -33,7 +33,7 @@ import { writeCompareReport } from "./compare";
 import { recordVideos } from "./video";
 import { detectTech, rollupTech, JS_GLOBAL_PATHS, type TechInput } from "./tech";
 import { correlateVulnerabilities } from "./cve";
-import { lookupDomain, lookupDns, lookupGeo, checkEmailSecurity } from "./domain";
+import { lookupDomain, lookupDns, lookupGeo, lookupExitIp, checkEmailSecurity } from "./domain";
 import { inspectTls } from "./tls";
 
 const STILL_CSS = `
@@ -112,6 +112,10 @@ Scope flags:
 Auth:
   --auth-storage <path>  Playwright storageState JSON to use for authenticated crawls
 
+Privacy:
+  --verify-ip            abort before crawling unless the public exit IP looks like a VPN/proxy
+  --home-ip <ip>         your real (VPN-off) IP; aborts if the exit IP matches it (implies --verify-ip)
+
 Performance:
   --concurrency <N>      parallel pages in flight (default ${DEFAULT_CONCURRENCY})
 
@@ -150,6 +154,8 @@ function parseCli(): ParsedCli {
         "video-pages":    { type: "string" },
         "video-viewport": { type: "string", multiple: true },
         "video-scheme":   { type: "string", multiple: true },
+        "verify-ip":      { type: "boolean" },
+        "home-ip":        { type: "string" },
         "help":           { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -204,6 +210,15 @@ function parseCli(): ParsedCli {
     return resolved;
   };
 
+  const homeIp = (raw: string | undefined): string | null => {
+    if (raw === undefined) return null;
+    if (net.isIP(raw) === 0) {
+      console.error(`crawlshot: --home-ip must be a valid IP address, got ${raw}`);
+      process.exit(1);
+    }
+    return raw;
+  };
+
   const videoEnabled = Boolean(values["video"]);
 
   const rawViewports = (values["video-viewport"] as string[] | undefined) ?? [];
@@ -242,6 +257,9 @@ function parseCli(): ParsedCli {
     videoPages:   re(values["video-pages"], "video-pages"),
     videoViewports,
     videoSchemes,
+    homeIp:       homeIp(values["home-ip"]),
+    // --home-ip implies the check; supplying a baseline is itself opting in.
+    verifyIp:     Boolean(values["verify-ip"]) || values["home-ip"] !== undefined,
   };
 
   const urls = expandUrlSources(positionals);
@@ -828,8 +846,52 @@ function siteLabelFor(url: string): string {
   return new URL(url).hostname.replace(/[^a-zA-Z0-9.\-]/g, "-");
 }
 
+// Pre-flight VPN/proxy check (--verify-ip). Confirms the public exit IP this
+// machine presents isn't your real connection BEFORE any crawl request leaves —
+// so a dropped or forgotten VPN aborts the run instead of leaking your IP. The
+// lookup rides the same network path crawlshot uses, so it reflects the tunnel.
+async function verifyVpn(opts: RunOptions): Promise<void> {
+  console.log("Verifying exit IP (--verify-ip)...");
+  const info = await lookupExitIp();
+  if (!info || !info.ip) {
+    console.error(
+      "crawlshot: could not determine your exit IP (network/API error). Aborting so nothing leaks.",
+    );
+    process.exit(1);
+  }
+  const where = [info.city, info.country].filter(Boolean).join(", ");
+  console.log(`  exit IP : ${info.ip}${where ? `  (${where})` : ""}`);
+  console.log(`  network : ${info.org || info.isp || "unknown"}${info.asn ? `  [${info.asn}]` : ""}`);
+
+  // Strongest check: you supplied your real (VPN-off) IP, so we can be definitive.
+  if (opts.homeIp) {
+    if (info.ip === opts.homeIp) {
+      console.error(
+        `\ncrawlshot: exit IP equals your real IP (${opts.homeIp}) — VPN is OFF. Aborting.`,
+      );
+      process.exit(1);
+    }
+    console.log(`  verdict : differs from your real IP (${opts.homeIp}) — VPN active ✓\n`);
+    return;
+  }
+
+  // Heuristic: VPN/datacenter exits are flagged hosting/proxy by ip-api;
+  // residential and mobile ISP connections are not.
+  if (!info.proxy && !info.hosting) {
+    console.error(
+      `\ncrawlshot: exit IP looks like a residential/ISP connection (${info.org || info.isp}), not a VPN.\n` +
+        `Connect Proton VPN (kill switch on) and retry, or pass --home-ip <your-real-ip> for a definitive check.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `  verdict : VPN/datacenter route (hosting=${info.hosting}, proxy=${info.proxy}) ✓\n`,
+  );
+}
+
 async function main(): Promise<void> {
   const { urls, options } = parseCli();
+  if (options.verifyIp) await verifyVpn(options);
   const runStamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const downloads = path.join(os.homedir(), "Downloads");
 

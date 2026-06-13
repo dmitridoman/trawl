@@ -1,5 +1,5 @@
 import dns from "dns";
-import type { DomainInfo, DnsRecords, GeoInfo, EmailSecurity, EmailFinding, ReconSeverity } from "./util";
+import type { DomainInfo, DnsRecords, GeoInfo, ExitIp, EmailSecurity, EmailFinding, ReconSeverity } from "./util";
 
 const resolver = dns.promises;
 
@@ -190,6 +190,29 @@ export async function lookupGeo(ip: string | undefined): Promise<GeoInfo> {
     org: data.org ?? null,
     asn: data.as ?? null,
     reverse: data.reverse || null,
+  };
+}
+
+// Ask ip-api what public IP this machine currently presents (no IP arg = "me"),
+// plus its proxy/hosting/mobile classification. Goes out over the same network
+// path crawlshot will use, so it reflects the active VPN/proxy tunnel.
+export async function lookupExitIp(): Promise<ExitIp | null> {
+  const data = await fetchJson(
+    "http://ip-api.com/json/?fields=status,query,country,countryCode,city,isp,org,as,proxy,hosting,mobile",
+    "application/json",
+  );
+  if (!data || data.status !== "success" || !data.query) return null;
+  return {
+    ip: data.query,
+    country: data.country ?? null,
+    countryCode: data.countryCode ?? null,
+    city: data.city ?? null,
+    isp: data.isp ?? null,
+    org: data.org ?? null,
+    asn: data.as ?? null,
+    proxy: Boolean(data.proxy),
+    hosting: Boolean(data.hosting),
+    mobile: Boolean(data.mobile),
   };
 }
 

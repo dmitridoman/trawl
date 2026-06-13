@@ -233,6 +233,23 @@ export type RunOptions = {
   videoPages: RegExp | null;
   videoViewports: string[];
   videoSchemes: string[];
+  verifyIp: boolean;
+  homeIp: string | null;
+};
+
+// Public exit IP + geo/ASN as the world sees this machine, with ip-api's
+// proxy/hosting/mobile flags. Used by the --verify-ip VPN pre-flight check.
+export type ExitIp = {
+  ip: string | null;
+  country: string | null;
+  countryCode: string | null;
+  city: string | null;
+  isp: string | null;
+  org: string | null;
+  asn: string | null;
+  proxy: boolean;
+  hosting: boolean;
+  mobile: boolean;
 };
 
 export const DEFAULT_CONCURRENCY = 4;
