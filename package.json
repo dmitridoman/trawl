@@ -15,7 +15,8 @@
     "dev": "tsx src/index.ts",
     "prepare": "tsup",
     "prepublishOnly": "tsup",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install chromium",
+    "update-datasets": "node scripts/update-datasets.mjs"
   },
   "keywords": [
     "screenshot",

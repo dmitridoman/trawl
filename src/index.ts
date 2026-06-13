@@ -20,6 +20,8 @@ import {
   type AxeSummary,
   type LinkCheck,
   type RunOptions,
+  type TechResult,
+  type SiteIntel,
 } from "./util";
 import { dismissCookieBanner } from "./cookies";
 import { extractSeo } from "./seo";
@@ -29,6 +31,10 @@ import { checkLinks } from "./links";
 import { buildResults, writeResults, type Results } from "./results";
 import { writeCompareReport } from "./compare";
 import { recordVideos } from "./video";
+import { detectTech, rollupTech, JS_GLOBAL_PATHS, type TechInput } from "./tech";
+import { correlateVulnerabilities } from "./cve";
+import { lookupDomain, lookupDns, lookupGeo, checkEmailSecurity } from "./domain";
+import { inspectTls } from "./tls";
 
 const STILL_CSS = `
 *, *::before, *::after {
@@ -94,6 +100,8 @@ Audit flags:
   --no-lighthouse        skip the Lighthouse audit phase
   --no-axe               skip the axe-core a11y scan
   --no-links             skip outbound-link HEAD checks
+  --no-recon             skip passive recon (WHOIS/DNS/geo, tech, TLS, email)
+  --no-cve               skip known-vulnerability correlation (keeps other recon)
 
 Scope flags:
   --max-pages <N>        stop after N pages have been crawled
@@ -130,6 +138,8 @@ function parseCli(): ParsedCli {
         "no-lighthouse":  { type: "boolean" },
         "no-axe":         { type: "boolean" },
         "no-links":       { type: "boolean" },
+        "no-recon":       { type: "boolean" },
+        "no-cve":         { type: "boolean" },
         "max-pages":      { type: "string" },
         "max-depth":      { type: "string" },
         "include":        { type: "string" },
@@ -220,6 +230,8 @@ function parseCli(): ParsedCli {
     noLighthouse: Boolean(values["no-lighthouse"]),
     noAxe:        Boolean(values["no-axe"]),
     noLinks:      Boolean(values["no-links"]),
+    noRecon:      Boolean(values["no-recon"]),
+    noCve:        Boolean(values["no-cve"]),
     maxPages:     num(values["max-pages"], "max-pages"),
     maxDepth:     num(values["max-depth"], "max-depth"),
     include:      re(values["include"], "include"),
@@ -286,10 +298,60 @@ type CrawlOutput = {
   pageStatus: Map<string, number | null>;
   seo: Map<string, SeoMeta>;
   security: Map<string, SecurityHeaders>;
+  tech: Map<string, TechResult>;
   consoleEvents: Map<string, ConsoleEvent[]>;
   outboundLinks: { fromSlug: string; url: string; text?: string }[];
   baseOrigin: string;
 };
+
+// Gather the passive fingerprint inputs the page exposes (script URLs, <meta>
+// tags, and the JS globals the dataset references), then run the matcher.
+// Skipped entirely when --no-recon is set.
+async function collectTech(page: Page, url: string, headers: Record<string, string>): Promise<TechResult | null> {
+  try {
+    const cookies = await page.context().cookies().catch(() => []);
+    const html = await page.content().catch(() => "");
+    const probe = (await page.evaluate((paths: string[]) => {
+      const scriptSrc = Array.from(document.querySelectorAll("script[src]")).map((s) => (s as HTMLScriptElement).src);
+      const metas: Record<string, string> = {};
+      document.querySelectorAll("meta[name], meta[property]").forEach((m) => {
+        const n = (m.getAttribute("name") || m.getAttribute("property") || "").toLowerCase();
+        const c = m.getAttribute("content");
+        if (n && c != null) metas[n] = c;
+      });
+      const jsGlobals: Record<string, string> = {};
+      for (const path of paths) {
+        try {
+          let cur: any = window;
+          for (const part of path.split(".")) {
+            if (cur == null) { cur = undefined; break; }
+            cur = cur[part];
+          }
+          if (cur !== undefined) jsGlobals[path] = typeof cur === "string" || typeof cur === "number" ? String(cur) : "";
+        } catch {
+          // inaccessible global (e.g. cross-origin getter) — skip
+        }
+      }
+      return { scriptSrc, metas, jsGlobals };
+    }, JS_GLOBAL_PATHS)) as { scriptSrc: string[]; metas: Record<string, string>; jsGlobals: Record<string, string> };
+
+    const normHeaders: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headers)) normHeaders[k.toLowerCase()] = v;
+
+    const input: TechInput = {
+      url,
+      headers: normHeaders,
+      cookies: cookies.map((c) => ({ name: c.name, value: c.value })),
+      html,
+      scriptSrc: probe.scriptSrc,
+      metas: probe.metas,
+      jsGlobals: probe.jsGlobals,
+    };
+    return detectTech(input);
+  } catch {
+    return null;
+  }
+}
 
 function attachConsoleListeners(page: Page, sink: ConsoleEvent[]): () => void {
   const onConsole = (msg: import("playwright").ConsoleMessage) => {
@@ -339,6 +401,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
   const pageStatus = new Map<string, number | null>();
   const seo = new Map<string, SeoMeta>();
   const security = new Map<string, SecurityHeaders>();
+  const tech = new Map<string, TechResult>();
   const consoleEvents = new Map<string, ConsoleEvent[]>();
   const outboundLinks: { fromSlug: string; url: string; text?: string }[] = [];
 
@@ -389,6 +452,11 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         seo.set(slug, await extractSeo(page));
       } catch (err) {
         console.warn(`    seo extract failed for ${slug}: ${(err as Error).message}`);
+      }
+
+      if (!opts.noRecon) {
+        const techResult = await collectTech(page, resolvedUrl, headers);
+        if (techResult) tech.set(slug, techResult);
       }
 
       const linkData = await page.evaluate(`(() => {
@@ -504,10 +572,34 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
     pageStatus,
     seo,
     security,
+    tech,
     consoleEvents,
     outboundLinks,
     baseOrigin: resolvedOrigin ?? new URL(baseUrl).origin,
   };
+}
+
+// Site-level passive recon: domain registration (RDAP), DNS, IP geo/ASN, TLS,
+// and email-spoofing posture. Runs once per site against the resolved origin.
+// `technologies` and `vulnerabilities` are filled in by the caller after the
+// per-page tech results have been rolled up. Returns null on hard failure.
+async function gatherSiteIntel(origin: string): Promise<SiteIntel | null> {
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    return null;
+  }
+  const [domain, dns, tls] = await Promise.all([
+    lookupDomain(hostname),
+    lookupDns(hostname),
+    inspectTls(hostname),
+  ]);
+  const [geo, email] = await Promise.all([
+    lookupGeo(dns.a[0]),
+    checkEmailSecurity(hostname, dns.txt),
+  ]);
+  return { domain, dns, geo, email, tls, technologies: [], vulnerabilities: [] };
 }
 
 type ShootJob = { rec: PageRecord; scheme: typeof COLOR_SCHEMES[number]; vp: typeof VIEWPORTS[number] };
@@ -629,6 +721,22 @@ async function runSite(
   const crawled = await crawl(url, options);
   console.log(`\nFound ${crawled.pages.length} page(s). Shooting...\n`);
 
+  // Kick off passive recon and CVE correlation now so they overlap with the
+  // (slower) screenshot/Lighthouse phases. Tech is already in hand from crawl.
+  const techRollup = options.noRecon ? [] : rollupTech([...crawled.tech.values()]);
+  const reconP: Promise<SiteIntel | null> = options.noRecon
+    ? Promise.resolve(null)
+    : gatherSiteIntel(crawled.baseOrigin).catch((err) => {
+        console.warn(`Recon phase failed: ${(err as Error).message}`);
+        return null;
+      });
+  const cveP = options.noRecon || options.noCve
+    ? Promise.resolve([])
+    : correlateVulnerabilities(techRollup, { nvd: true }).catch((err) => {
+        console.warn(`CVE correlation failed: ${(err as Error).message}`);
+        return [];
+      });
+
   const axeResults = await shoot(crawled.pages, outDir, !options.noAxe, options);
 
   let lighthouse: Map<string, LighthouseDetail> | null = null;
@@ -662,6 +770,21 @@ async function runSite(
     await recordVideos(crawled.pages, outDir, options);
   }
 
+  let siteIntel: SiteIntel | null = null;
+  if (!options.noRecon) {
+    console.log("\nGathering site intelligence (WHOIS/DNS/geo, tech, TLS, email)...");
+    siteIntel = await reconP;
+    if (siteIntel) {
+      siteIntel.technologies = techRollup;
+      siteIntel.vulnerabilities = await cveP;
+      const tls = siteIntel.tls;
+      console.log(
+        `  ${siteIntel.technologies.length} technologies, ${siteIntel.vulnerabilities.length} vuln finding(s)` +
+          `${tls ? `, TLS ${tls.grade}` : ""}, email ${siteIntel.email.grade}`,
+      );
+    }
+  }
+
   console.log("\nBuilding results.json...");
   const results = buildResults({
     outDir,
@@ -676,8 +799,10 @@ async function runSite(
     axe: axeResults,
     seo: crawled.seo,
     security: crawled.security,
+    tech: crawled.tech,
     consoleEvents: crawled.consoleEvents,
     links,
+    site: siteIntel,
   });
   writeResults(outDir, results);
 

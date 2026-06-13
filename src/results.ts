@@ -7,13 +7,18 @@ import type {
   PageRecord,
   SecurityHeaders,
   SeoMeta,
+  TechResult,
+  SiteIntel,
 } from "./util";
 import type { LighthouseDetail } from "./lighthouse";
 
+// v3: adds a site-level `site` intelligence block (passive recon — domain/WHOIS,
+// DNS, IP geo/ASN, TLS, email security, technology fingerprint rollup, and
+// known-vulnerability findings) plus a per-page `tech` fingerprint.
 // v2: per-page Lighthouse detail (millisecond metrics, opportunities, diagnostics,
 // failing audits), full axe node detail, console stacks, link anchor text/referrers,
 // and an `external` flag for off-origin (third-party) pages.
-export const RESULTS_SCHEMA_VERSION = 2;
+export const RESULTS_SCHEMA_VERSION = 3;
 
 export type PageResult = {
   url: string;
@@ -25,6 +30,7 @@ export type PageResult = {
   axe: AxeSummary | null;
   seo: SeoMeta | null;
   security: SecurityHeaders | null;
+  tech: TechResult | null;
   console: ConsoleEvent[];
 };
 
@@ -41,6 +47,7 @@ export type ResultsSummary = {
 export type Results = {
   schemaVersion: number;
   site: { label: string; url: string };
+  intel: SiteIntel | null; // passive recon; null when --no-recon
   runStamp: string;
   durationMs: number;
   pages: PageResult[];
@@ -61,8 +68,10 @@ export type ResultsInputs = {
   axe: Map<string, AxeSummary>;
   seo: Map<string, SeoMeta>;
   security: Map<string, SecurityHeaders>;
+  tech: Map<string, TechResult>;
   consoleEvents: Map<string, ConsoleEvent[]>;
   links: LinkCheck[];
+  site: SiteIntel | null;
 };
 
 function avg(nums: number[]): number {
@@ -89,6 +98,7 @@ export function buildResults(inputs: ResultsInputs): Results {
     axe: inputs.axe.get(p.slug) ?? null,
     seo: inputs.seo.get(p.slug) ?? null,
     security: inputs.security.get(p.slug) ?? null,
+    tech: inputs.tech.get(p.slug) ?? null,
     console: inputs.consoleEvents.get(p.slug) ?? [],
   }));
 
@@ -134,6 +144,7 @@ export function buildResults(inputs: ResultsInputs): Results {
   return {
     schemaVersion: RESULTS_SCHEMA_VERSION,
     site: { label: inputs.siteLabel, url: inputs.siteUrl },
+    intel: inputs.site,
     runStamp: inputs.runStamp,
     durationMs: inputs.durationMs,
     pages: pageResults,

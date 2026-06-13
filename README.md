@@ -1,6 +1,6 @@
 # crawlshot
 
-One command. Crawls every internal page of a site, screenshots each at mobile/tablet/desktop in light + dark, runs Lighthouse + full axe-core a11y + SEO meta + security header + broken-link audits, and ships the lot as a folder + zip with a single dashboard `index.html`. Pass multiple URLs (or a `.txt` file) and you get a side-by-side comparison.
+One command. Crawls every internal page of a site, screenshots each at mobile/tablet/desktop in light + dark, runs Lighthouse + full axe-core a11y + SEO meta + security header + broken-link audits, gathers **passive intelligence** about the site (WHOIS/RDAP, DNS, hosting/geo, technology stack, TLS, email-spoofing posture, and known-vulnerability correlation), and ships the lot as a folder + zip with a single dashboard `index.html`. Pass multiple URLs (or a `.txt` file) and you get a side-by-side comparison.
 
 The dashboard is **self-contained and deep by default**: millisecond Lighthouse metrics, perf opportunities with the offending resources, the actual LCP element, every axe node (selector + fix + contrast values), and full console stack traces are embedded directly in `index.html` — no need to open the side files. That makes the report enough, on its own, for a human or an agent to act on. Third-party pages reached via an off-origin redirect (e.g. an external booking host) are labelled and excluded from your averages.
 
@@ -80,9 +80,25 @@ Each page gets:
 - **Security headers** — scores CSP, HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-Content-Type-Options, COOP, CORP. Grades A–F.
 - **Console + page errors** — every JS error and warning logged during crawl, with source location and the **full stack trace** for uncaught exceptions.
 - **Broken-link scan** — HEAD-checks every outbound `<a href>` discovered during crawl. Reports 404s, redirect chains, unreachable hosts, with the anchor text and every page that links to it.
+- **Technology fingerprint** — Wappalyzer-style detection of the CMS, e-commerce platform, frameworks, JS libraries, analytics, tag managers, CDN, web server and language each page uses, with versions where exposed. Per-page chip + list; rolled up site-wide in the intelligence panel.
 - **HTTP status** — status code from each crawled page's main navigation
 
 Scores show as chips in `index.html` (green ≥ 90, amber 50–89, red < 50). Expand any page's detail sections for the millisecond metrics, axe nodes, and console stacks — all inline.
+
+## Site intelligence (passive recon)
+
+Once per site, crawlshot also assembles an **intelligence panel** at the top of the dashboard — the kind of profile you'd take to a prospect ("your domain's been live since 2009, it's on WordPress 5.2 with 3 known CVEs, anyone can spoof your email, and your TLS still accepts TLS 1.1"):
+
+- **Domain & ownership** — registrar, registration date and **domain age**, expiry, nameservers and registrant org via **RDAP** (the modern JSON successor to WHOIS).
+- **Hosting** — server IP, **country**, city, hosting provider/ISP, **ASN**, reverse DNS, DNS host and mail provider — from native DNS lookups + IP geolocation.
+- **TLS / certificate** — issuer, negotiated protocol, days-to-expiry, SAN count, and a grade; flags expired/near-expiry certs and hosts that still accept legacy TLS 1.0/1.1.
+- **Email security** — SPF, DKIM and DMARC posture with a grade, and a clear **spoofable** flag when SPF/DMARC are missing or unenforced.
+- **Technology stack** — the deduped, site-wide technology rollup.
+- **Known vulnerabilities** — detected component versions correlated against public databases: **RetireJS** for JS libraries (high-confidence CVE/GHSA) and a best-effort **NVD** keyword lookup for the CMS/server (clearly labelled "potential — verify before reporting").
+
+> **Scope — passive only.** crawlshot performs *passive reconnaissance*: it reads public registry data (RDAP/DNS), inspects the responses and TLS handshake the target voluntarily returns, and correlates exposed version labels against public vulnerability databases. It does **not** attempt unauthorised access, exploitation, port scanning, exposed-file probing or any active attack. This keeps it lawful (e.g. under the UK Computer Misuse Act 1990) and safe to run against a prospect's site. Anything beyond this would require written authorisation from the site owner.
+
+Recon runs by default. Use `--no-recon` to skip it entirely, or `--no-cve` to keep the recon but skip vulnerability correlation (and its rate-limited NVD calls). The fingerprint and vulnerability datasets are vendored under `src/data/`; refresh them with `npm run update-datasets`.
 
 ## Machine-readable output
 
@@ -90,8 +106,17 @@ Every run writes `results.json` alongside `index.html`:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "site": { "label": "example.com", "url": "https://example.com" },
+  "intel": {
+    "domain": { "domain": "example.com", "registrar": "...", "createdAt": "2009-03-12T00:00:00Z", "ageYears": 17.2, "nameservers": ["..."], "source": "rdap" },
+    "dns": { "a": ["104.18.1.1"], "mx": [{ "exchange": "aspmx.l.google.com", "priority": 1 }], "mailProvider": "Google Workspace", "dnsHost": "Cloudflare", "...": "..." },
+    "geo": { "ip": "104.18.1.1", "country": "United States", "countryCode": "US", "isp": "Cloudflare, Inc.", "asn": "AS13335 ..." },
+    "email": { "grade": "D", "spoofable": true, "spf": { "severity": "ok" }, "dmarc": { "severity": "bad", "note": "no DMARC record" }, "dkim": { "severity": "warn" } },
+    "tls": { "ok": true, "protocol": "TLSv1.3", "grade": "B", "daysToExpiry": 47, "legacyProtocols": [], "issuer": "...", "findings": [...] },
+    "technologies": [ { "name": "WordPress", "version": "5.2", "categories": ["CMS"], "confidence": 100 }, ... ],
+    "vulnerabilities": [ { "component": "jQuery", "version": "1.7.0", "severity": "medium", "ids": ["CVE-2020-7656"], "source": "retirejs", "confidence": "confirmed", "summary": "..." }, ... ]
+  },
   "runStamp": "2026-05-16T14-25-11",
   "durationMs": 18234,
   "summary": {
@@ -122,6 +147,7 @@ Every run writes `results.json` alongside `index.html`:
           "nodes": [ { "target": "a.link", "html": "...", "failureSummary": "...", "checks": [ { "id": "color-contrast", "message": "...", "data": { "fgColor": "#adefd1", "bgColor": "#ffffff", "contrastRatio": 1.3, "expectedContrastRatio": "4.5:1" } } ] } ] } ] },
       "seo": { "title": "...", "titleLength": 42, "h1Count": 1, ... },
       "security": { "score": 65, "grade": "C", "checks": [...] },
+      "tech": { "technologies": [ { "name": "WordPress", "version": "5.2", "categories": ["CMS"], "confidence": 100 }, ... ] },
       "console": [ { "type": "pageerror", "text": "...", "stack": "..." } ]
     }
   ],

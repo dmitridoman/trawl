@@ -1,6 +1,6 @@
 import path from "path";
 import fs from "fs";
-import { VIEWPORTS, COLOR_SCHEMES, type SeoMeta, type AxeSummary, type AxeNode, type SecurityHeaders, type ConsoleEvent, type LinkCheck } from "./util";
+import { VIEWPORTS, COLOR_SCHEMES, type SeoMeta, type AxeSummary, type AxeNode, type SecurityHeaders, type ConsoleEvent, type LinkCheck, type TechResult, type SiteIntel, type VulnFinding, type EmailFinding, type TlsFinding } from "./util";
 import type { Scores, LighthouseDetail, LighthouseMetric } from "./lighthouse";
 import { seoIssues } from "./seo";
 import type { Results, PageResult } from "./results";
@@ -240,6 +240,170 @@ function externalChip(): string {
   </span>`;
 }
 
+// ── Passive recon rendering ────────────────────────────────────────────────
+
+const RECON_TIER: Record<"ok" | "warn" | "bad", "good" | "ok" | "bad"> = { ok: "good", warn: "ok", bad: "bad" };
+
+function severityTier(sev: VulnFinding["severity"]): "good" | "ok" | "bad" | "neutral" {
+  if (sev === "critical" || sev === "high") return "bad";
+  if (sev === "medium") return "ok";
+  if (sev === "low") return "neutral";
+  return "neutral";
+}
+
+function techChip(tech: TechResult | null): string {
+  if (!tech || tech.technologies.length === 0) return "";
+  return `<span class="chip chip-neutral" title="Technologies detected on this page">
+    <span class="chip-label">Tech</span>
+    <span class="chip-value">${tech.technologies.length}</span>
+  </span>`;
+}
+
+function techSection(tech: TechResult | null): string {
+  if (!tech || tech.technologies.length === 0) return "";
+  const rows = tech.technologies
+    .map(
+      (t) =>
+        `<li><span class="tech-name">${escapeHtml(t.name)}</span>${t.version ? ` <span class="tech-ver">${escapeHtml(t.version)}</span>` : ""}<span class="tech-cats">${escapeHtml(t.categories.join(" · "))}</span></li>`,
+    )
+    .join("");
+  return `<details class="details"><summary>Technologies (${tech.technologies.length})</summary>
+      <ul class="tech-list">${rows}</ul>
+    </details>`;
+}
+
+function reconCell(label: string, value: string | null | undefined): string {
+  return `<div class="intel-cell"><span class="intel-key">${escapeHtml(label)}</span><span class="intel-val">${value ? escapeHtml(value) : "—"}</span></div>`;
+}
+
+function emailFindingChip(f: EmailFinding): string {
+  const tier = RECON_TIER[f.severity];
+  return `<span class="chip chip-${tier}" title="${escapeHtml(f.note ?? f.name)}">
+    <span class="chip-label">${escapeHtml(f.name)}</span>
+    <span class="chip-value">${f.present ? "✓" : "✗"}</span>
+  </span>`;
+}
+
+function tlsFindingChip(f: TlsFinding): string {
+  const tier = RECON_TIER[f.severity];
+  return `<span class="chip chip-${tier}" title="${escapeHtml(f.detail)}"><span class="chip-label">${escapeHtml(f.name)}</span></span>`;
+}
+
+function siteIntelCard(intel: SiteIntel): string {
+  const d = intel.domain;
+  const dns = intel.dns;
+  const geo = intel.geo;
+  const tls = intel.tls;
+  const email = intel.email;
+
+  const age = d.ageYears != null ? `${d.ageYears} yr${d.ageYears === 1 ? "" : "s"}` : null;
+  const created = d.createdAt ? d.createdAt.slice(0, 10) : null;
+  const expires = d.expiresAt ? d.expiresAt.slice(0, 10) : null;
+  const flag = geo?.countryCode
+    ? geo.countryCode.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)))
+    : "";
+
+  const domainGrid = `<div class="intel-grid">
+    ${reconCell("domain", d.domain)}
+    ${reconCell("registrar", d.registrar)}
+    ${reconCell("registered", created ? `${created}${age ? ` (${age} ago)` : ""}` : null)}
+    ${reconCell("expires", expires)}
+    ${reconCell("registrant", d.registrantOrg)}
+    ${reconCell("nameservers", dns.dnsHost || (dns.ns[0] ?? null))}
+  </div>`;
+
+  const hostGrid = `<div class="intel-grid">
+    ${reconCell("server IP", dns.a[0] ?? null)}
+    ${reconCell("country", geo ? `${flag ? flag + " " : ""}${geo.country ?? geo.countryCode ?? "—"}${geo.city ? ` · ${geo.city}` : ""}` : null)}
+    ${reconCell("hosting", geo?.isp || geo?.org)}
+    ${reconCell("ASN", geo?.asn)}
+    ${reconCell("mail provider", dns.mailProvider)}
+    ${reconCell("reverse DNS", geo?.reverse)}
+  </div>`;
+
+  const tlsBlock = tls
+    ? `<div class="intel-block">
+        <div class="intel-block-head"><h3>TLS / certificate</h3>${gradePill(tls.grade)}</div>
+        <div class="intel-grid">
+          ${reconCell("protocol", tls.protocol)}
+          ${reconCell("issuer", tls.issuer)}
+          ${reconCell("expires", tls.daysToExpiry != null ? `${tls.daysToExpiry} day(s)` : null)}
+          ${reconCell("SAN names", tls.san.length ? String(tls.san.length) : null)}
+        </div>
+        <div class="chips intel-chips">${tls.findings.map(tlsFindingChip).join("")}</div>
+        ${tls.note ? `<p class="intel-note">${escapeHtml(tls.note)}</p>` : ""}
+      </div>`
+    : "";
+
+  const emailBlock = `<div class="intel-block">
+      <div class="intel-block-head"><h3>Email security</h3>${gradePill(email.grade)}${email.spoofable ? `<span class="intel-warn-tag">spoofable</span>` : ""}</div>
+      <div class="chips intel-chips">${[email.spf, email.dmarc, email.dkim].map(emailFindingChip).join("")}</div>
+      <ul class="intel-notes">${[email.spf, email.dmarc, email.dkim]
+        .filter((f) => f.note)
+        .map((f) => `<li class="intel-note-${RECON_TIER[f.severity]}">${escapeHtml(f.name)}: ${escapeHtml(f.note!)}</li>`)
+        .join("")}</ul>
+    </div>`;
+
+  const techRollup = intel.technologies.length > 0
+    ? `<div class="intel-block">
+        <h3>Technology stack (${intel.technologies.length})</h3>
+        <div class="chips intel-chips">${intel.technologies
+          .map((t) => `<span class="chip chip-neutral" title="${escapeHtml(t.categories.join(", "))}"><span class="chip-label">${escapeHtml(t.name)}</span>${t.version ? `<span class="chip-value">${escapeHtml(t.version)}</span>` : ""}</span>`)
+          .join("")}</div>
+      </div>`
+    : "";
+
+  return `<section class="intel">
+    <h2>Site intelligence <span class="intel-sub">passive recon — public records &amp; what the site exposes</span></h2>
+    <div class="intel-cols">
+      <div class="intel-block"><h3>Domain &amp; ownership</h3>${domainGrid}${d.source === "unavailable" ? `<p class="intel-note">${escapeHtml(d.note ?? "WHOIS/RDAP unavailable")}</p>` : ""}</div>
+      <div class="intel-block"><h3>Hosting</h3>${hostGrid}</div>
+    </div>
+    <div class="intel-cols">${tlsBlock}${emailBlock}</div>
+    ${techRollup}
+  </section>`;
+}
+
+function gradePill(grade: string): string {
+  const tier = grade === "A" ? "good" : grade === "B" || grade === "C" ? "ok" : "bad";
+  return `<span class="grade-pill grade-${tier}">${escapeHtml(grade)}</span>`;
+}
+
+function vulnPanel(intel: SiteIntel | null): string {
+  if (!intel || intel.vulnerabilities.length === 0) return "";
+  const v = intel.vulnerabilities;
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 } as Record<VulnFinding["severity"], number>;
+  for (const f of v) counts[f.severity]++;
+  const summary = (["critical", "high", "medium", "low", "unknown"] as const)
+    .filter((s) => counts[s] > 0)
+    .map((s) => `<span class="vuln-count vuln-${severityTier(s)}">${counts[s]} ${s}</span>`)
+    .join("");
+
+  const rows = v
+    .map((f) => {
+      const ids = f.ids
+        .map((id) => (/^CVE-/.test(id) ? `<a href="https://nvd.nist.gov/vuln/detail/${escapeHtml(id)}" target="_blank" rel="noopener">${escapeHtml(id)}</a>` : /^GHSA-/.test(id) ? `<a href="https://github.com/advisories/${escapeHtml(id)}" target="_blank" rel="noopener">${escapeHtml(id)}</a>` : escapeHtml(id)))
+        .join(", ");
+      return `<tr class="vuln-row vuln-${severityTier(f.severity)}">
+        <td><span class="vuln-sev">${escapeHtml(f.severity)}</span></td>
+        <td>${escapeHtml(f.component)}${f.version ? ` <span class="vuln-ver">${escapeHtml(f.version)}</span>` : ""}</td>
+        <td>${ids}</td>
+        <td>${escapeHtml(f.summary)}</td>
+        <td><span class="vuln-src" title="${f.confidence === "confirmed" ? "version matched against vulnerable range" : "keyword match — verify before reporting"}">${escapeHtml(f.source)} · ${escapeHtml(f.confidence)}</span></td>
+      </tr>`;
+    })
+    .join("");
+
+  return `<section class="issues vuln-panel">
+    <h2>Known vulnerabilities <span class="vuln-summary">${summary}</span></h2>
+    <p class="intel-note">Detected from publicly exposed version labels and correlated against public databases (RetireJS, NVD). "potential" findings are keyword matches — verify before acting.</p>
+    <table class="links-table vuln-table">
+      <thead><tr><th>Severity</th><th>Component</th><th>Identifiers</th><th>Summary</th><th>Source</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
 function pageCard(rec: PageResult): string {
   const title = rec.title.trim() || rec.slug;
   const lhHref = `lighthouse/${encodeURIComponent(rec.slug)}.html`;
@@ -256,6 +420,7 @@ function pageCard(rec: PageResult): string {
   }
   if (rec.axe) chips.push(axeChip(rec.axe, axeHref));
   if (rec.security) chips.push(secChip(rec.security));
+  chips.push(techChip(rec.tech));
   chips.push(consoleChip(rec.console));
   if (rec.external) chips.unshift(externalChip());
 
@@ -341,6 +506,7 @@ function pageCard(rec: PageResult): string {
     <div class="chips">${chips.join("")}</div>
     ${perfSection}
     ${rec.seo ? seoRow(rec.seo) : ""}
+    ${techSection(rec.tech)}
     ${axeSection}
     ${securitySection}
     ${consoleSection}
@@ -419,9 +585,15 @@ function issuesPanel(results: Results): string {
 function summaryBar(results: Results): string {
   const s = results.summary;
   const lh = s.lighthouseAverages;
+  const intel = results.intel;
   return `<div class="summary">
     <span class="sum-cell"><span class="sum-key">pages</span><span class="sum-val">${s.pages}</span></span>
     ${s.externalPages > 0 ? `<span class="sum-cell"><span class="sum-key">third-party</span><span class="sum-val">${s.externalPages}</span></span>` : ""}
+    ${intel?.domain.ageYears != null ? `<span class="sum-cell"><span class="sum-key">domain age</span><span class="sum-val">${intel.domain.ageYears}y</span></span>` : ""}
+    ${intel?.tls ? `<span class="sum-cell"><span class="sum-key">TLS</span><span class="sum-val">${intel.tls.grade}</span></span>` : ""}
+    ${intel ? `<span class="sum-cell"><span class="sum-key">email</span><span class="sum-val">${intel.email.grade}${intel.email.spoofable ? " ⚠" : ""}</span></span>` : ""}
+    ${intel ? `<span class="sum-cell"><span class="sum-key">tech</span><span class="sum-val">${intel.technologies.length}</span></span>` : ""}
+    ${intel && intel.vulnerabilities.length > 0 ? `<span class="sum-cell"><span class="sum-key">vulnerabilities</span><span class="sum-val">${intel.vulnerabilities.length}</span></span>` : ""}
     ${lh ? `<span class="sum-cell"><span class="sum-key">avg perf</span><span class="sum-val">${lh.performance}</span></span>` : ""}
     ${lh ? `<span class="sum-cell"><span class="sum-key">avg a11y</span><span class="sum-val">${lh.accessibility}</span></span>` : ""}
     ${lh ? `<span class="sum-cell"><span class="sum-key">avg seo</span><span class="sum-val">${lh.seo}</span></span>` : ""}
@@ -548,6 +720,49 @@ const CSS = `
   .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; border: 1px solid rgba(255,255,255,0.2); vertical-align: middle; margin-left: 2px; }
   .console-stack { background: #0e0f12; border: 1px solid #23262d; border-radius: 6px; padding: 6px 8px; margin: 4px 0 0; font-size: 11px; color: #9ba2ad; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
   footer { color: #6b7280; font-size: 12px; margin-top: 32px; text-align: center; }
+  .chip-neutral { color: #93c5fd; border-color: rgba(147, 197, 253, 0.3); background: rgba(147, 197, 253, 0.08); }
+  .intel { background: #16181d; border: 1px solid #23262d; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+  .intel h2 { margin: 0 0 14px; }
+  .intel-sub { color: #6b7280; font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 8px; }
+  .intel-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 4px; }
+  .intel-block { background: #11131a; border: 1px solid #23262d; border-radius: 8px; padding: 14px; margin-bottom: 16px; }
+  .intel-block h3 { margin: 0 0 10px; }
+  .intel-block-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .intel-block-head h3 { margin: 0; }
+  .intel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px; }
+  .intel-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .intel-key { color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .intel-val { color: #e7e9ee; font-size: 13px; font-variant-numeric: tabular-nums; word-break: break-word; overflow-wrap: anywhere; }
+  .intel-chips { margin: 10px 0 0; }
+  .intel-note { color: #9ba2ad; font-size: 11px; margin: 8px 0 0; }
+  .intel-notes { list-style: none; padding: 0; margin: 8px 0 0; font-size: 11px; }
+  .intel-notes li { margin: 3px 0; }
+  .intel-note-good { color: #10b981; }
+  .intel-note-ok { color: #f59e0b; }
+  .intel-note-bad { color: #ef4444; }
+  .grade-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; font-size: 13px; font-weight: 700; }
+  .grade-good { color: #10b981; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); }
+  .grade-ok { color: #f59e0b; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); }
+  .grade-bad { color: #ef4444; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); }
+  .intel-warn-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 999px; padding: 2px 8px; }
+  .tech-list { list-style: none; padding: 0 !important; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 4px 16px; }
+  .tech-list li { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+  .tech-name { color: #e7e9ee; font-weight: 600; }
+  .tech-ver { color: #93c5fd; font-variant-numeric: tabular-nums; }
+  .tech-cats { color: #6b7280; font-size: 11px; margin-left: auto; text-align: right; }
+  .vuln-panel { border-color: rgba(239, 68, 68, 0.3); }
+  .vuln-summary { font-weight: 400; font-size: 12px; margin-left: 8px; }
+  .vuln-count { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; margin-left: 6px; }
+  .vuln-count.vuln-bad { color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.35); }
+  .vuln-count.vuln-ok { color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.35); }
+  .vuln-count.vuln-neutral { color: #9ba2ad; border: 1px solid rgba(255, 255, 255, 0.15); }
+  .vuln-table td { vertical-align: top; }
+  .vuln-sev { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 4px; }
+  .vuln-bad .vuln-sev { background: rgba(239, 68, 68, 0.18); color: #ef4444; }
+  .vuln-ok .vuln-sev { background: rgba(245, 158, 11, 0.16); color: #f59e0b; }
+  .vuln-neutral .vuln-sev { background: rgba(255, 255, 255, 0.06); color: #9ba2ad; }
+  .vuln-ver { color: #93c5fd; font-variant-numeric: tabular-nums; }
+  .vuln-src { color: #6b7280; font-size: 11px; }
 `;
 
 export function writeIndexReport(outDir: string, results: Results): void {
@@ -572,6 +787,8 @@ export function writeIndexReport(outDir: string, results: Results): void {
     <span>· click chips for full reports · averages exclude third-party pages · machine data in <code>results.json</code></span>
   </div>
   ${summaryBar(results)}
+  ${results.intel ? siteIntelCard(results.intel) : ""}
+  ${vulnPanel(results.intel)}
   ${issuesPanel(results)}
   ${cards}
   <footer>generated by crawlshot · schema v${results.schemaVersion}</footer>
