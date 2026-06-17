@@ -195,7 +195,7 @@ export async function lookupGeo(ip: string | undefined): Promise<GeoInfo> {
 
 // Ask ip-api what public IP this machine currently presents (no IP arg = "me"),
 // plus its proxy/hosting/mobile classification. Goes out over the same network
-// path crawlshot will use, so it reflects the active VPN/proxy tunnel.
+// path trawl will use, so it reflects the active VPN/proxy tunnel.
 export async function lookupExitIp(): Promise<ExitIp | null> {
   const data = await fetchJson(
     "http://ip-api.com/json/?fields=status,query,country,countryCode,city,isp,org,as,proxy,hosting,mobile",

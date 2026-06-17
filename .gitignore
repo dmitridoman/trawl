@@ -9,3 +9,7 @@ screenshots.zip
 
 # local passive-recon/OSINT probe toolkit (not part of the package)
 recon/
+
+# generated icon sizes + machine-specific .app bundle (rebuild via scripts/make-icon.mjs)
+app/Trawl.iconset/
+app/Trawl.app/

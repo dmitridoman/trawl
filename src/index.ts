@@ -93,19 +93,19 @@ body { overflow: auto !important; }
 `;
 
 const HELP = `
-crawlshot — crawl a site and audit every internal page
+Trawl — crawl a site and audit every internal page
 
 Usage:
-  crawlshot <url> [flags]
-  crawlshot <url> <url> <url> [flags]       multi-site compare mode
-  crawlshot <urls.txt> [flags]              read URLs from a file (one per line, # for comments)
+  trawl <url> [flags]
+  trawl <url> <url> <url> [flags]       multi-site compare mode
+  trawl <urls.txt> [flags]              read URLs from a file (one per line, # for comments)
 
 Examples:
-  crawlshot http://localhost:3000
-  crawlshot https://example.com --max-pages 50 --concurrency 6
-  crawlshot https://example.com --exclude '/blog/'
-  crawlshot https://stripe.com https://plaid.com https://truelayer.com
-  crawlshot ./prospects.txt --max-pages 30
+  trawl http://localhost:3000
+  trawl https://example.com --max-pages 50 --concurrency 6
+  trawl https://example.com --exclude '/blog/'
+  trawl https://stripe.com https://plaid.com https://truelayer.com
+  trawl ./prospects.txt --max-pages 30
 
 Audit flags:
   --no-lighthouse        skip the Lighthouse audit phase
@@ -190,7 +190,7 @@ function parseCli(): ParsedCli {
       allowPositionals: true,
     });
   } catch (err) {
-    console.error(`crawlshot: ${(err as Error).message}`);
+    console.error(`trawl: ${(err as Error).message}`);
     console.error(HELP);
     process.exit(1);
   }
@@ -206,7 +206,7 @@ function parseCli(): ParsedCli {
     if (raw === undefined) return null;
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) {
-      console.error(`crawlshot: --${name} must be a positive number, got ${raw}`);
+      console.error(`trawl: --${name} must be a positive number, got ${raw}`);
       process.exit(1);
     }
     return n;
@@ -217,7 +217,7 @@ function parseCli(): ParsedCli {
     try {
       return new RegExp(raw);
     } catch (err) {
-      console.error(`crawlshot: --${name} is not a valid regex: ${(err as Error).message}`);
+      console.error(`trawl: --${name} is not a valid regex: ${(err as Error).message}`);
       process.exit(1);
     }
   };
@@ -228,12 +228,12 @@ function parseCli(): ParsedCli {
     try {
       const stat = fs.statSync(resolved);
       if (!stat.isFile()) {
-        console.error(`crawlshot: --auth-storage must point to a file, got ${raw}`);
+        console.error(`trawl: --auth-storage must point to a file, got ${raw}`);
         process.exit(1);
       }
       JSON.parse(fs.readFileSync(resolved, "utf8"));
     } catch (err) {
-      console.error(`crawlshot: --auth-storage is not a readable JSON file: ${(err as Error).message}`);
+      console.error(`trawl: --auth-storage is not a readable JSON file: ${(err as Error).message}`);
       process.exit(1);
     }
     return resolved;
@@ -242,7 +242,7 @@ function parseCli(): ParsedCli {
   const homeIp = (raw: string | undefined): string | null => {
     if (raw === undefined) return null;
     if (net.isIP(raw) === 0) {
-      console.error(`crawlshot: --home-ip must be a valid IP address, got ${raw}`);
+      console.error(`trawl: --home-ip must be a valid IP address, got ${raw}`);
       process.exit(1);
     }
     return raw;
@@ -254,7 +254,7 @@ function parseCli(): ParsedCli {
   const validViewportNames = VIEWPORTS.map((v) => v.name);
   for (const vp of rawViewports) {
     if (!validViewportNames.includes(vp as typeof VIEWPORTS[number]["name"])) {
-      console.error(`crawlshot: --video-viewport must be one of: ${validViewportNames.join(", ")}, got "${vp}"`);
+      console.error(`trawl: --video-viewport must be one of: ${validViewportNames.join(", ")}, got "${vp}"`);
       process.exit(1);
     }
   }
@@ -264,7 +264,7 @@ function parseCli(): ParsedCli {
   const validSchemes = [...COLOR_SCHEMES];
   for (const s of rawSchemes) {
     if (!validSchemes.includes(s as typeof COLOR_SCHEMES[number])) {
-      console.error(`crawlshot: --video-scheme must be one of: ${validSchemes.join(", ")}, got "${s}"`);
+      console.error(`trawl: --video-scheme must be one of: ${validSchemes.join(", ")}, got "${s}"`);
       process.exit(1);
     }
   }
@@ -326,7 +326,7 @@ function expandUrlSources(positionals: string[]): string[] {
         .map((l) => l.trim())
         .filter((l) => l && !l.startsWith("#"));
       if (urls.length === 0) {
-        console.error(`crawlshot: ${candidate} contains no URLs`);
+        console.error(`trawl: ${candidate} contains no URLs`);
         process.exit(1);
       }
       return urls;
@@ -334,7 +334,7 @@ function expandUrlSources(positionals: string[]): string[] {
   }
   for (const p of positionals) {
     if (!/^https?:\/\//i.test(p)) {
-      console.error(`crawlshot: not a URL or file: ${p}`);
+      console.error(`trawl: not a URL or file: ${p}`);
       process.exit(1);
     }
   }
@@ -928,13 +928,13 @@ function siteLabelFor(url: string): string {
 // Pre-flight VPN/proxy check (--verify-ip). Confirms the public exit IP this
 // machine presents isn't your real connection BEFORE any crawl request leaves —
 // so a dropped or forgotten VPN aborts the run instead of leaking your IP. The
-// lookup rides the same network path crawlshot uses, so it reflects the tunnel.
+// lookup rides the same network path trawl uses, so it reflects the tunnel.
 async function verifyVpn(opts: RunOptions): Promise<void> {
   console.log("Verifying exit IP (--verify-ip)...");
   const info = await lookupExitIp();
   if (!info || !info.ip) {
     console.error(
-      "crawlshot: could not determine your exit IP (network/API error). Aborting so nothing leaks.",
+      "trawl: could not determine your exit IP (network/API error). Aborting so nothing leaks.",
     );
     process.exit(1);
   }
@@ -946,7 +946,7 @@ async function verifyVpn(opts: RunOptions): Promise<void> {
   if (opts.homeIp) {
     if (info.ip === opts.homeIp) {
       console.error(
-        `\ncrawlshot: exit IP equals your real IP (${opts.homeIp}) — VPN is OFF. Aborting.`,
+        `\ntrawl: exit IP equals your real IP (${opts.homeIp}) — VPN is OFF. Aborting.`,
       );
       process.exit(1);
     }
@@ -958,7 +958,7 @@ async function verifyVpn(opts: RunOptions): Promise<void> {
   // residential and mobile ISP connections are not.
   if (!info.proxy && !info.hosting) {
     console.error(
-      `\ncrawlshot: exit IP looks like a residential/ISP connection (${info.org || info.isp}), not a VPN.\n` +
+      `\ntrawl: exit IP looks like a residential/ISP connection (${info.org || info.isp}), not a VPN.\n` +
         `Connect Proton VPN (kill switch on) and retry, or pass --home-ip <your-real-ip> for a definitive check.`,
     );
     process.exit(1);
@@ -977,8 +977,8 @@ async function main(): Promise<void> {
   if (urls.length === 1) {
     const url = urls[0]!;
     const label = siteLabelFor(url);
-    const outDir = path.join(downloads, `crawlshot-${label}-${runStamp}`);
-    const zipPath = path.join(downloads, `crawlshot-${label}-${runStamp}.zip`);
+    const outDir = path.join(downloads, `trawl-${label}-${runStamp}`);
+    const zipPath = path.join(downloads, `trawl-${label}-${runStamp}.zip`);
 
     const result = await runSite(url, options, outDir, runStamp, label, zipPath);
 
@@ -989,8 +989,8 @@ async function main(): Promise<void> {
   }
 
   // Multi-site compare mode
-  const compareDir = path.join(downloads, `crawlshot-compare-${runStamp}`);
-  const compareZip = path.join(downloads, `crawlshot-compare-${runStamp}.zip`);
+  const compareDir = path.join(downloads, `trawl-compare-${runStamp}`);
+  const compareZip = path.join(downloads, `trawl-compare-${runStamp}.zip`);
   const sitesDir = path.join(compareDir, "sites");
   fs.mkdirSync(sitesDir, { recursive: true });
 

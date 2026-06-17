@@ -8,8 +8,8 @@ import { chromium, type Browser, type BrowserContext } from "playwright";
 import { UI_HTML } from "./ui";
 
 // ---------------------------------------------------------------------------
-// crawlshot local control panel — a tiny dependency-free web UI that builds the
-// CLI flag set from a form, spawns the bundled crawlshot CLI, streams its logs
+// trawl local control panel — a tiny dependency-free web UI that builds the
+// CLI flag set from a form, spawns the bundled trawl CLI, streams its logs
 // to the browser over SSE, captures authenticated sessions via a headed
 // Playwright window, and serves the resulting dashboards/mirrors for viewing.
 //
@@ -17,9 +17,20 @@ import { UI_HTML } from "./ui";
 // ---------------------------------------------------------------------------
 
 const HOST = "127.0.0.1";
-const PORT = Number(process.env.CRAWLSHOT_PORT || 4317);
+const PORT = Number(process.env.TRAWL_PORT || process.env.CRAWLSHOT_PORT || 4317);
 const DOWNLOADS = path.join(os.homedir(), "Downloads");
-const CONFIG_DIR = path.join(os.homedir(), ".crawlshot");
+const CONFIG_DIR = path.join(os.homedir(), ".trawl");
+// Migrate config (saved auth sessions + run history) from the pre-rename
+// ~/.crawlshot directory, one time, if the new location doesn't exist yet.
+{
+  const legacy = path.join(os.homedir(), ".crawlshot");
+  try {
+    if (fs.existsSync(legacy) && !fs.existsSync(CONFIG_DIR)) fs.renameSync(legacy, CONFIG_DIR);
+  } catch {}
+}
+// Output run folders are prefixed "trawl-" now; "crawlshot-" folders from
+// before the rename are still recognised so old captures stay browsable.
+const RUN_PREFIX = /^(?:trawl|crawlshot)-/;
 const AUTH_DIR = path.join(CONFIG_DIR, "auth");
 const HISTORY_FILE = path.join(CONFIG_DIR, "history.json");
 const CLI = path.join(__dirname, "index.js"); // sibling bundle
@@ -110,7 +121,7 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
   return { args, urls };
 }
 
-// ---- Persisted run history (~/.crawlshot/history.json) --------------------
+// ---- Persisted run history (~/.trawl/history.json) --------------------
 
 type HistoryRecord = {
   runId: string;
@@ -158,9 +169,9 @@ function updateHistory(runId: string, patch: Partial<HistoryRecord>): void {
 }
 
 // Delete a run's output folder (+ its sibling .zip) and drop it from history.
-// Strictly scoped to crawlshot-* folders directly under Downloads.
+// Strictly scoped to trawl-* folders directly under Downloads.
 function deleteRun(folder: string): { ok: true } | { error: string } {
-  if (!folder.startsWith("crawlshot-") || folder.includes("/") || folder.includes("..")) {
+  if (!RUN_PREFIX.test(folder) || folder.includes("/") || folder.includes("..")) {
     return { error: "Invalid folder" };
   }
   const dir = path.join(DOWNLOADS, folder);
@@ -299,7 +310,7 @@ async function cancelLogin(sessionId: string): Promise<void> {
 // ---- Run history ----------------------------------------------------------
 
 // Persisted UI-initiated runs first (survives restarts, carries config/status),
-// then any crawlshot-* folders found on disk that history doesn't know about.
+// then any trawl-* folders found on disk that history doesn't know about.
 function listRuns(): unknown[] {
   const out: unknown[] = [];
   const seenFolders = new Set<string>();
@@ -331,7 +342,7 @@ function listRuns(): unknown[] {
     /* ignore */
   }
   const disk = entries
-    .filter((e) => e.isDirectory() && e.name.startsWith("crawlshot-") && !seenFolders.has(e.name))
+    .filter((e) => e.isDirectory() && RUN_PREFIX.test(e.name) && !seenFolders.has(e.name))
     .map((e) => {
       const dir = path.join(DOWNLOADS, e.name);
       const stat = fs.statSync(dir);
@@ -362,8 +373,8 @@ const MIME: Record<string, string> = {
 };
 
 function serveFile(folder: string, rest: string, res: http.ServerResponse): void {
-  // Resolve strictly under a crawlshot-* run folder in Downloads; reject traversal.
-  if (!folder.startsWith("crawlshot-")) return notFound(res);
+  // Resolve strictly under a trawl-* run folder in Downloads; reject traversal.
+  if (!RUN_PREFIX.test(folder)) return notFound(res);
   const base = path.join(DOWNLOADS, folder);
   const target = path.join(base, rest);
   if (path.relative(base, target).startsWith("..") || !target.startsWith(base)) return notFound(res);
@@ -458,7 +469,7 @@ const server = http.createServer(async (req, res) => {
     // Reveal a run folder in Finder (macOS).
     if (parts[0] === "api" && parts[1] === "reveal" && method === "GET") {
       const folder = decodeURIComponent(parts[2] || "");
-      if (folder.startsWith("crawlshot-")) {
+      if (RUN_PREFIX.test(folder)) {
         execFile("open", [path.join(DOWNLOADS, folder)], () => {});
       }
       res.writeHead(204);
@@ -480,8 +491,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const addr = `http://${HOST}:${PORT}`;
-  console.log(`\ncrawlshot control panel → ${addr}\n`);
+  console.log(`\nTrawl control panel → ${addr}\n`);
   // Best-effort: open the panel in the default browser on macOS (set
-  // CRAWLSHOT_NO_OPEN=1 to suppress).
-  if (process.platform === "darwin" && !process.env.CRAWLSHOT_NO_OPEN) execFile("open", [addr], () => {});
+  // TRAWL_NO_OPEN=1 to suppress).
+  if (process.platform === "darwin" && !process.env.TRAWL_NO_OPEN) execFile("open", [addr], () => {});
 });

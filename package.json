@@ -1,10 +1,10 @@
 {
-  "name": "crawlshot",
+  "name": "trawl",
   "version": "0.1.1",
-  "description": "Crawl a site and screenshot every internal page at mobile/tablet/desktop, then zip the lot.",
+  "description": "Drag a net over any site — mirror pages and media, screenshot every view, and sweep for tech/security/recon signals, then zip the lot.",
   "bin": {
-    "crawlshot": "dist/index.js",
-    "crawlshot-ui": "dist/server.js"
+    "trawl": "dist/index.js",
+    "trawl-ui": "dist/server.js"
   },
   "files": [
     "dist",
@@ -24,7 +24,9 @@
   "keywords": [
     "screenshot",
     "playwright",
-    "crawl",
+    "site-mirror",
+    "recon",
+    "osint",
     "website",
     "qa",
     "visual-regression",

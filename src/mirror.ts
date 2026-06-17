@@ -55,7 +55,7 @@ export type MirrorManifest = {
 };
 
 export type MirrorState = {
-  outDir: string; // crawlshot-<label>-<stamp>/
+  outDir: string; // trawl-<label>-<stamp>/
   root: string; // <outDir>/mirror
   assetDir: string; // <root>/assets
   pagesDir: string; // <root>/pages

@@ -292,7 +292,7 @@ export async function runLighthouse(
 
   const launchBrowser = async (): Promise<{ newPage: () => Promise<Page>; close: () => Promise<void> }> => {
     if (options.authStorage) {
-      const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "crawlshot-lighthouse-"));
+      const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "trawl-lighthouse-"));
       const context = await chromium.launchPersistentContext(userDataDir, {
         args: [`--remote-debugging-port=${port}`],
         ignoreHTTPSErrors: true,

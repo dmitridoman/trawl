@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2DD4BF"/>
+      <stop offset="0.45" stop-color="#0E7C86"/>
+      <stop offset="1" stop-color="#0B2D4A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FDE68A" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#FDE68A" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="bag"><path d="M 240 372 C 240 588, 392 808, 512 808 C 632 808, 784 588, 784 372 A 272 96 0 0 1 240 372 Z"/></clipPath>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#021018" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- squircle background -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#bg)"/>
+  <!-- top sheen -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="#ffffff" opacity="0.06"/>
+
+  <!-- the net -->
+  <g filter="url(#soft)">
+    <!-- bag fill -->
+    <path d="M 240 372 C 240 588, 392 808, 512 808 C 632 808, 784 588, 784 372 A 272 96 0 0 1 240 372 Z" fill="#06202F" opacity="0.30"/>
+
+    <!-- glowing catches gathered in the cod-end -->
+    <circle cx="500" cy="690" r="90" fill="url(#glow)"/>
+    <circle cx="476" cy="676" r="26" fill="#FDE68A"/>
+    <circle cx="540" cy="700" r="22" fill="#FFFFFF"/>
+    <circle cx="498" cy="724" r="18" fill="#7DD3FC"/>
+
+    <!-- diamond mesh -->
+    <g clip-path="url(#bag)">
+      <g transform="rotate(45 512 512)" stroke="#EAFBFF" stroke-width="9" stroke-opacity="0.85" fill="none">
+        <line x1="-480" y1="-480" x2="-480" y2="1504"/><line x1="-480" y1="-480" x2="1504" y2="-480"/><line x1="-422" y1="-480" x2="-422" y2="1504"/><line x1="-480" y1="-422" x2="1504" y2="-422"/><line x1="-364" y1="-480" x2="-364" y2="1504"/><line x1="-480" y1="-364" x2="1504" y2="-364"/><line x1="-306" y1="-480" x2="-306" y2="1504"/><line x1="-480" y1="-306" x2="1504" y2="-306"/><line x1="-248" y1="-480" x2="-248" y2="1504"/><line x1="-480" y1="-248" x2="1504" y2="-248"/><line x1="-190" y1="-480" x2="-190" y2="1504"/><line x1="-480" y1="-190" x2="1504" y2="-190"/><line x1="-132" y1="-480" x2="-132" y2="1504"/><line x1="-480" y1="-132" x2="1504" y2="-132"/><line x1="-74" y1="-480" x2="-74" y2="1504"/><line x1="-480" y1="-74" x2="1504" y2="-74"/><line x1="-16" y1="-480" x2="-16" y2="1504"/><line x1="-480" y1="-16" x2="1504" y2="-16"/><line x1="42" y1="-480" x2="42" y2="1504"/><line x1="-480" y1="42" x2="1504" y2="42"/><line x1="100" y1="-480" x2="100" y2="1504"/><line x1="-480" y1="100" x2="1504" y2="100"/><line x1="158" y1="-480" x2="158" y2="1504"/><line x1="-480" y1="158" x2="1504" y2="158"/><line x1="216" y1="-480" x2="216" y2="1504"/><line x1="-480" y1="216" x2="1504" y2="216"/><line x1="274" y1="-480" x2="274" y2="1504"/><line x1="-480" y1="274" x2="1504" y2="274"/><line x1="332" y1="-480" x2="332" y2="1504"/><line x1="-480" y1="332" x2="1504" y2="332"/><line x1="390" y1="-480" x2="390" y2="1504"/><line x1="-480" y1="390" x2="1504" y2="390"/><line x1="448" y1="-480" x2="448" y2="1504"/><line x1="-480" y1="448" x2="1504" y2="448"/><line x1="506" y1="-480" x2="506" y2="1504"/><line x1="-480" y1="506" x2="1504" y2="506"/><line x1="564" y1="-480" x2="564" y2="1504"/><line x1="-480" y1="564" x2="1504" y2="564"/><line x1="622" y1="-480" x2="622" y2="1504"/><line x1="-480" y1="622" x2="1504" y2="622"/><line x1="680" y1="-480" x2="680" y2="1504"/><line x1="-480" y1="680" x2="1504" y2="680"/><line x1="738" y1="-480" x2="738" y2="1504"/><line x1="-480" y1="738" x2="1504" y2="738"/><line x1="796" y1="-480" x2="796" y2="1504"/><line x1="-480" y1="796" x2="1504" y2="796"/><line x1="854" y1="-480" x2="854" y2="1504"/><line x1="-480" y1="854" x2="1504" y2="854"/><line x1="912" y1="-480" x2="912" y2="1504"/><line x1="-480" y1="912" x2="1504" y2="912"/><line x1="970" y1="-480" x2="970" y2="1504"/><line x1="-480" y1="970" x2="1504" y2="970"/><line x1="1028" y1="-480" x2="1028" y2="1504"/><line x1="-480" y1="1028" x2="1504" y2="1028"/><line x1="1086" y1="-480" x2="1086" y2="1504"/><line x1="-480" y1="1086" x2="1504" y2="1086"/><line x1="1144" y1="-480" x2="1144" y2="1504"/><line x1="-480" y1="1144" x2="1504" y2="1144"/><line x1="1202" y1="-480" x2="1202" y2="1504"/><line x1="-480" y1="1202" x2="1504" y2="1202"/><line x1="1260" y1="-480" x2="1260" y2="1504"/><line x1="-480" y1="1260" x2="1504" y2="1260"/><line x1="1318" y1="-480" x2="1318" y2="1504"/><line x1="-480" y1="1318" x2="1504" y2="1318"/><line x1="1376" y1="-480" x2="1376" y2="1504"/><line x1="-480" y1="1376" x2="1504" y2="1376"/><line x1="1434" y1="-480" x2="1434" y2="1504"/><line x1="-480" y1="1434" x2="1504" y2="1434"/><line x1="1492" y1="-480" x2="1492" y2="1504"/><line x1="-480" y1="1492" x2="1504" y2="1492"/>
+      </g>
+    </g>
+
+    <!-- mouth rim (front lip + back) -->
+    <ellipse cx="512" cy="372" rx="272" ry="96" fill="none" stroke="#EAFBFF" stroke-width="22" stroke-opacity="0.95"/>
+    <!-- bag outline -->
+    <path d="M 240 372 C 240 588, 392 808, 512 808 C 632 808, 784 588, 784 372 A 272 96 0 0 1 240 372 Z" fill="none" stroke="#EAFBFF" stroke-width="16" stroke-opacity="0.6"/>
+  </g>
+</svg>

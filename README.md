@@ -1,4 +1,4 @@
-# crawlshot
+# Trawl
 
 One command. Crawls every internal page of a site, screenshots each at mobile/tablet/desktop in light + dark, runs Lighthouse + full axe-core a11y + SEO meta + security header + broken-link audits, gathers **passive intelligence** about the site (WHOIS/RDAP, DNS, hosting/geo, technology stack, TLS, email-spoofing posture, and known-vulnerability correlation), and ships the lot as a folder + zip with a single dashboard `index.html`. Pass multiple URLs (or a `.txt` file) and you get a side-by-side comparison.
 
@@ -10,14 +10,14 @@ No install — run straight from npm:
 
 ```bash
 # single site
-npx crawlshot http://localhost:3000
-npx crawlshot https://example.com
-npx crawlshot https://example.com --max-pages 50 --concurrency 6
-npx crawlshot https://staging.example.com --auth-storage ./auth.json
+npx trawl http://localhost:3000
+npx trawl https://example.com
+npx trawl https://example.com --max-pages 50 --concurrency 6
+npx trawl https://staging.example.com --auth-storage ./auth.json
 
 # multi-site comparison
-npx crawlshot https://stripe.com https://plaid.com https://truelayer.com
-npx crawlshot ./prospects.txt --max-pages 30
+npx trawl https://stripe.com https://plaid.com https://truelayer.com
+npx trawl ./prospects.txt --max-pages 30
 ```
 
 Or from GitHub without publishing:
@@ -29,8 +29,8 @@ pnpm dlx github:dmitridoman/crawlshot https://example.com
 Or install globally:
 
 ```bash
-npm i -g crawlshot
-crawlshot https://example.com
+npm i -g trawl
+trawl https://example.com
 ```
 
 ## Output
@@ -38,7 +38,7 @@ crawlshot https://example.com
 Drops into `~/Downloads/`:
 
 ```
-crawlshot-<site>-<timestamp>/
+trawl-<site>-<timestamp>/
   index.html              dashboard — chips, issues panel, thumbnails
   results.json            machine-readable union of everything
   light/
@@ -55,7 +55,7 @@ crawlshot-<site>-<timestamp>/
   a11y/
     home.json             per-page axe-core violations + WCAG SCs
     about.json
-crawlshot-<site>-<timestamp>.zip
+trawl-<site>-<timestamp>.zip
 ```
 
 Nested routes use `__` so the folder names stay flat and readable. Open `index.html` to skim every page at every viewport at light/dark with score chips and an issues panel inline.
@@ -87,7 +87,7 @@ Scores show as chips in `index.html` (green ≥ 90, amber 50–89, red < 50). Ex
 
 ## Site intelligence (passive recon)
 
-Once per site, crawlshot also assembles an **intelligence panel** at the top of the dashboard — the kind of profile you'd take to a prospect ("your domain's been live since 2009, it's on WordPress 5.2 with 3 known CVEs, anyone can spoof your email, and your TLS still accepts TLS 1.1"):
+Once per site, trawl also assembles an **intelligence panel** at the top of the dashboard — the kind of profile you'd take to a prospect ("your domain's been live since 2009, it's on WordPress 5.2 with 3 known CVEs, anyone can spoof your email, and your TLS still accepts TLS 1.1"):
 
 - **Domain & ownership** — registrar, registration date and **domain age**, expiry, nameservers and registrant org via **RDAP** (the modern JSON successor to WHOIS).
 - **Hosting** — server IP, **country**, city, hosting provider/ISP, **ASN**, reverse DNS, DNS host and mail provider — from native DNS lookups + IP geolocation.
@@ -96,7 +96,7 @@ Once per site, crawlshot also assembles an **intelligence panel** at the top of 
 - **Technology stack** — the deduped, site-wide technology rollup.
 - **Known vulnerabilities** — detected component versions correlated against public databases: **RetireJS** for JS libraries (high-confidence CVE/GHSA) and a best-effort **NVD** keyword lookup for the CMS/server (clearly labelled "potential — verify before reporting").
 
-> **Scope — passive only.** crawlshot performs *passive reconnaissance*: it reads public registry data (RDAP/DNS), inspects the responses and TLS handshake the target voluntarily returns, and correlates exposed version labels against public vulnerability databases. It does **not** attempt unauthorised access, exploitation, port scanning, exposed-file probing or any active attack. This keeps it lawful (e.g. under the UK Computer Misuse Act 1990) and safe to run against a prospect's site. Anything beyond this would require written authorisation from the site owner.
+> **Scope — passive only.** trawl performs *passive reconnaissance*: it reads public registry data (RDAP/DNS), inspects the responses and TLS handshake the target voluntarily returns, and correlates exposed version labels against public vulnerability databases. It does **not** attempt unauthorised access, exploitation, port scanning, exposed-file probing or any active attack. This keeps it lawful (e.g. under the UK Computer Misuse Act 1990) and safe to run against a prospect's site. Anything beyond this would require written authorisation from the site owner.
 
 Recon runs by default. Use `--no-recon` to skip it entirely, or `--no-cve` to keep the recon but skip vulnerability correlation (and its rate-limited NVD calls). The fingerprint and vulnerability datasets are vendored under `src/data/`; refresh them with `npm run update-datasets`.
 
@@ -158,7 +158,7 @@ Every run writes `results.json` alongside `index.html`:
 Averages (`lighthouseAverages`, `securityAverage`, `axe`) reflect your own pages only — pages flagged `external: true` are excluded. Pipe it through `jq` for ad-hoc scripting:
 
 ```bash
-jq '.summary' ~/Downloads/crawlshot-*/results.json
+jq '.summary' ~/Downloads/trawl-*/results.json
 # slowest LCP across own pages
 jq -r '.pages[] | select(.external|not) | [.slug, (.lighthouse.metrics[]? | select(.id=="largest-contentful-paint") | .numericValue)] | @tsv' results.json
 # every axe node selector to fix
@@ -193,30 +193,30 @@ Pass a Playwright `storageState` file when the target site needs login cookies o
 
 ```bash
 npx playwright codegen https://staging.example.com --save-storage=auth.json
-crawlshot https://staging.example.com --auth-storage ./auth.json
+trawl https://staging.example.com --auth-storage ./auth.json
 ```
 
 `--auth-storage` applies to the whole run, including crawl discovery, screenshots, axe, videos, Lighthouse, and every site in multi-site comparison mode.
 
 ## Multi-site comparison
 
-Pass two or more URLs and crawlshot produces a side-by-side comparison report:
+Pass two or more URLs and trawl produces a side-by-side comparison report:
 
 ```bash
-crawlshot https://stripe.com https://plaid.com https://truelayer.com --max-pages 30
+trawl https://stripe.com https://plaid.com https://truelayer.com --max-pages 30
 ```
 
 Drops into `~/Downloads/`:
 
 ```
-crawlshot-compare-<timestamp>/
+trawl-compare-<timestamp>/
   compare.html             leaderboard table — perf, a11y, SEO, security, axe, console, broken links
   compare.json             machine-readable comparison
   sites/
     stripe.com/            full single-site report (index.html + results.json + screenshots + …)
     plaid.com/
     truelayer.com/
-crawlshot-compare-<timestamp>.zip
+trawl-compare-<timestamp>.zip
 ```
 
 `compare.html` cells are colour-coded (green/amber/red) so the leaderboard is scannable at a glance. Click any site name to open its full report.
@@ -224,7 +224,7 @@ crawlshot-compare-<timestamp>.zip
 You can also pass a text file with one URL per line (`#` for comments):
 
 ```bash
-crawlshot ./prospects.txt --max-pages 20 --concurrency 6
+trawl ./prospects.txt --max-pages 20 --concurrency 6
 ```
 
 ## What it handles
@@ -239,6 +239,28 @@ crawlshot ./prospects.txt --max-pages 20 --concurrency 6
 ## Requirements
 
 Node 20+. Chromium downloads automatically on install via Playwright.
+
+## Control panel & macOS app
+
+Trawl ships a local web control panel — build the flag set from a form, capture
+authenticated sessions in a headed browser, stream logs live, and browse past
+runs and mirrors:
+
+```bash
+trawl-ui            # serves http://127.0.0.1:4317 and opens it in your browser
+```
+
+On macOS you can run it as a normal app. Build the icon + bundle and install it:
+
+```bash
+node scripts/make-icon.mjs   # renders app/icon.icns (net icon) via Chromium
+# then build app/Trawl.app and copy it to /Applications
+```
+
+`Trawl.app` launches the control panel and opens it in your browser; if a server
+is already running it just brings the panel to the front. Drag it from
+`/Applications` to your Dock to pin it. The bundle is machine-specific (it points
+at your local checkout) so it is git-ignored, not committed.
 
 ## Local development
 

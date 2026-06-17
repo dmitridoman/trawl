@@ -1,4 +1,4 @@
-// Single-page control panel for the crawlshot local server, served at GET /.
+// Single-page control panel for the trawl local server, served at GET /.
 // Dependency-free: vanilla JS, fetch + EventSource. Kept as a TS string so it
 // bundles into dist/server.js with no extra files to ship. (No backticks or
 // ${...} inside — string concatenation only — so the outer template literal
@@ -9,7 +9,7 @@ export const UI_HTML = /* html */ `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>crawlshot</title>
+<title>Trawl</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%95%B7%3C/text%3E%3C/svg%3E" />
 <style>
   :root {
@@ -163,7 +163,7 @@ export const UI_HTML = /* html */ `<!doctype html>
 <body>
 <header>
   <span class="logo">🕷</span>
-  <h1>crawlshot</h1>
+  <h1>Trawl</h1>
   <span class="ver">control panel</span>
   <span class="spacer"></span>
   <span class="dot"></span><span class="live">server live</span>
@@ -407,8 +407,8 @@ function apply(o) {
   $("videoOpts").style.display = $("video").checked ? "" : "none";
   persist();
 }
-function persist() { try { localStorage.setItem("crawlshot.form", JSON.stringify(collect())); } catch (e) {} }
-function restore() { try { var s = localStorage.getItem("crawlshot.form"); if (s) apply(JSON.parse(s)); } catch (e) {} }
+function persist() { try { localStorage.setItem("trawl.form", JSON.stringify(collect())); } catch (e) {} }
+function restore() { try { var s = localStorage.getItem("trawl.form"); if (s) apply(JSON.parse(s)); } catch (e) {} }
 
 function setMode(m) {
   mode = m;
