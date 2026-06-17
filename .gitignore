@@ -6,3 +6,6 @@ screenshots.zip
 *.log
 .env
 .env.local
+
+# local passive-recon/OSINT probe toolkit (not part of the package)
+recon/
