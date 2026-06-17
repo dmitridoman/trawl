@@ -71,6 +71,11 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
   const bool = (key: string, flag: string) => {
     if (o[key] === true) args.push(flag);
   };
+  const multiFlag = (key: string, flag: string, allowed: string[]) => {
+    const raw = o[key];
+    if (!Array.isArray(raw)) return;
+    for (const v of raw) if (typeof v === "string" && allowed.includes(v)) args.push(flag, v);
+  };
 
   numFlag("maxPages", "--max-pages");
   numFlag("maxDepth", "--max-depth");
@@ -86,6 +91,10 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
   bool("noLinks", "--no-links");
   bool("noRecon", "--no-recon");
   bool("noCve", "--no-cve");
+  bool("video", "--video");
+  strFlag("videoPages", "--video-pages");
+  multiFlag("videoViewports", "--video-viewport", ["phone", "tablet", "desktop"]);
+  multiFlag("videoSchemes", "--video-scheme", ["light", "dark"]);
   bool("verifyIp", "--verify-ip");
   strFlag("homeIp", "--home-ip");
 
@@ -105,6 +114,7 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
 type HistoryRecord = {
   runId: string;
   urls: string[];
+  opts: RunOpts; // the submitted options, so a run can be re-run from history
   startedAt: string;
   finishedAt: string | null;
   status: "running" | "done" | "stopped";
@@ -146,6 +156,24 @@ function updateHistory(runId: string, patch: Partial<HistoryRecord>): void {
   }
 }
 
+// Delete a run's output folder (+ its sibling .zip) and drop it from history.
+// Strictly scoped to crawlshot-* folders directly under Downloads.
+function deleteRun(folder: string): { ok: true } | { error: string } {
+  if (!folder.startsWith("crawlshot-") || folder.includes("/") || folder.includes("..")) {
+    return { error: "Invalid folder" };
+  }
+  const dir = path.join(DOWNLOADS, folder);
+  if (path.dirname(dir) !== DOWNLOADS) return { error: "Invalid folder" };
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir + ".zip", { force: true });
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+  saveHistory(loadHistory().filter((r) => r.folder !== folder));
+  return { ok: true };
+}
+
 // ---- Run lifecycle --------------------------------------------------------
 
 function broadcast(run: RunState, payload: unknown): void {
@@ -170,6 +198,7 @@ function startRun(o: RunOpts): { runId: string } | { error: string } {
   pushHistory({
     runId,
     urls: built.urls,
+    opts: o,
     startedAt: new Date().toISOString(),
     finishedAt: null,
     status: "running",
@@ -281,8 +310,12 @@ function listRuns(): unknown[] {
     out.push({
       folder: h.folder,
       urls: h.urls,
+      opts: h.opts ?? null,
       status: h.status,
       code: h.code,
+      startedAt: h.startedAt,
+      finishedAt: h.finishedAt,
+      durationMs: h.finishedAt ? new Date(h.finishedAt).getTime() - new Date(h.startedAt).getTime() : null,
       when: new Date(h.finishedAt || h.startedAt).toLocaleString(),
       hasDashboard: exists ? fs.existsSync(path.join(dir!, "index.html")) : false,
       hasMirror: exists ? fs.existsSync(path.join(dir!, "mirror")) : false,
@@ -413,6 +446,12 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/api/runs" && method === "GET") {
       return json(res, listRuns());
+    }
+
+    // Delete a run folder + drop it from history.
+    if (parts[0] === "api" && parts[1] === "delete" && method === "POST") {
+      const body = (await readBody(req)) as { folder?: string };
+      return json(res, deleteRun(body.folder || ""));
     }
 
     // Reveal a run folder in Finder (macOS).
