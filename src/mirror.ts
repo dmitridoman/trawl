@@ -211,7 +211,10 @@ async function handleResponse(resp: Response, ctx: BrowserContext, state: Mirror
   }
 
   const type = req.resourceType();
-  const wantAsset = ASSET_RESOURCE_TYPES.has(type) || (!!ct && /image\/svg|text\/css|javascript/i.test(ct));
+  // Media-only mode grabs just images; everything else (CSS/JS/fonts) is skipped.
+  const wantAsset = state.opts.mirrorMedia
+    ? type === "image" || (!!ct && /^image\//i.test(ct))
+    : ASSET_RESOURCE_TYPES.has(type) || (!!ct && /image\/svg|text\/css|javascript/i.test(ct));
   const wantMedia = state.opts.mirrorVideo && (type === "media" || (!!ct && MEDIA_TYPE.test(ct)));
   if (!wantAsset && !wantMedia) return;
 
@@ -252,14 +255,17 @@ export function attachMirrorListener(page: Page, ctx: BrowserContext, state: Mir
 // Called from the crawler once a page has settled: save its rendered HTML and
 // (under --mirror-video) scrape <video>/<source>/<audio> media URLs from the DOM.
 export async function mirrorPage(page: Page, ctx: BrowserContext, slug: string, url: string, state: MirrorState): Promise<void> {
-  try {
-    const html = await page.content();
-    const dest = path.join(state.pagesDir, `${slug}.html`);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, html, "utf8");
-    state.htmlPages.push({ slug, url, htmlPath: path.relative(state.root, dest) });
-  } catch {
-    // page closed / nav in flight — skip HTML for this page
+  // Media-only mode just wants the pictures/video, not the markup.
+  if (!state.opts.mirrorMedia) {
+    try {
+      const html = await page.content();
+      const dest = path.join(state.pagesDir, `${slug}.html`);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, html, "utf8");
+      state.htmlPages.push({ slug, url, htmlPath: path.relative(state.root, dest) });
+    } catch {
+      // page closed / nav in flight — skip HTML for this page
+    }
   }
 
   if (!state.opts.mirrorVideo) return;

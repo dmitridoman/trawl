@@ -213,9 +213,14 @@ export const UI_HTML = /* html */ `<!doctype html>
 
       <!-- Mirror-mode options -->
       <div id="mirrorOpts" style="display:none; margin-top:14px">
-        <label class="check sub"><input type="checkbox" id="mirrorVideo" /> Media + HLS/DASH <small>(yt-dlp)</small></label>
+        <div class="seg" id="mirrorScope" role="tablist" style="margin-bottom:12px">
+          <button id="scopeAll" role="tab" aria-selected="true" type="button">Everything<span class="sub">html · css · js · media</span></button>
+          <button id="scopeMedia" role="tab" aria-selected="false" type="button">Images &amp; video<span class="sub">media files only</span></button>
+        </div>
+        <label class="check sub" id="optMirrorVideo"><input type="checkbox" id="mirrorVideo" /> Media + HLS/DASH <small>(yt-dlp)</small></label>
         <label class="check sub"><input type="checkbox" id="mirrorCrossOrigin" /> Cross-origin (CDN) assets</label>
-        <label class="check sub"><input type="checkbox" id="mirrorRewrite" /> Rewrite URLs for offline browsing</label>
+        <label class="check sub" id="optMirrorRewrite"><input type="checkbox" id="mirrorRewrite" /> Rewrite URLs for offline browsing</label>
+        <p class="hint" id="mediaHint" style="display:none">Images, video &amp; audio only — HTML/CSS/JS skipped. yt-dlp + ffmpeg needed for HLS/DASH streaming video.</p>
       </div>
     </div>
 
@@ -294,7 +299,7 @@ export const UI_HTML = /* html */ `<!doctype html>
 <script>
 var $ = function (id) { return document.getElementById(id); };
 var consoleEl = $("console"), linksMount = $("resultMount");
-var es = null, loginSession = null, currentRunId = null, mode = "audit";
+var es = null, loginSession = null, currentRunId = null, mode = "audit", mirrorScope = "all";
 var timerInt = null, runStart = 0, pages = 0, doneSteps = {};
 
 var AUDIT_STEPS = [
@@ -377,6 +382,7 @@ function collect() {
     maxPages: v("maxPages") || null, maxDepth: v("maxDepth") || null,
     include: v("include") || null, exclude: v("exclude") || null, concurrency: v("concurrency") || null,
     mirror: mode === "mirror",
+    mirrorMedia: mode === "mirror" && mirrorScope === "media",
     mirrorVideo: c("mirrorVideo"), mirrorCrossOrigin: c("mirrorCrossOrigin"), mirrorRewrite: c("mirrorRewrite"),
     video: mode === "audit" && c("video"),
     videoViewports: chipVals("videoVps"), videoSchemes: chipVals("videoSch"),
@@ -387,6 +393,7 @@ function collect() {
 function apply(o) {
   o = o || {};
   setMode(o.mirror ? "mirror" : "audit");
+  setScope(o.mirrorMedia ? "media" : "all");
   var set = function (id, val) { if ($(id)) $(id).value = val == null ? "" : val; };
   var chk = function (id, val) { if ($(id)) $(id).checked = !!val; };
   set("url", Array.isArray(o.urls) ? o.urls.join("\\n") : (o.url || ""));
@@ -410,6 +417,15 @@ function setMode(m) {
   $("auditOpts").style.display = m === "audit" ? "" : "none";
   $("mirrorOpts").style.display = m === "mirror" ? "" : "none";
   $("auditCard").classList.toggle("dim", m === "mirror");
+}
+function setScope(s) {
+  mirrorScope = s;
+  $("scopeAll").setAttribute("aria-selected", s === "all" ? "true" : "false");
+  $("scopeMedia").setAttribute("aria-selected", s === "media" ? "true" : "false");
+  // In media-only mode, "Media + HLS/DASH" is automatic and there's no HTML to rewrite.
+  $("optMirrorVideo").style.display = s === "media" ? "none" : "";
+  $("optMirrorRewrite").style.display = s === "media" ? "none" : "";
+  $("mediaHint").style.display = s === "media" ? "" : "none";
 }
 
 // ---- validation -----------------------------------------------------------
@@ -533,8 +549,8 @@ function loadRuns() {
       var statusTxt = r.missing ? "deleted" : r.status;
       var meta = esc(r.when) + (r.durationMs ? " · " + fmtDur(r.durationMs) : "");
       var badges = [];
-      if (r.opts && r.opts.mirror) badges.push("mirror"); else badges.push("audit");
-      if (r.opts && r.opts.mirrorVideo) badges.push("video");
+      if (r.opts && r.opts.mirrorMedia) badges.push("media-only"); else if (r.opts && r.opts.mirror) badges.push("mirror"); else badges.push("audit");
+      if (r.opts && r.opts.mirrorVideo && !(r.opts && r.opts.mirrorMedia)) badges.push("video");
       if (r.opts && r.opts.video) badges.push("video");
       if (r.opts && r.opts.authStorage) badges.push("auth");
       if (r.hasMirror) badges.push("mirror saved");
@@ -569,6 +585,8 @@ function loadRuns() {
 // ---- wiring ---------------------------------------------------------------
 $("modeAudit").onclick = function () { setMode("audit"); persist(); };
 $("modeMirror").onclick = function () { setMode("mirror"); persist(); };
+$("scopeAll").onclick = function () { setScope("all"); persist(); };
+$("scopeMedia").onclick = function () { setScope("media"); persist(); };
 $("video").onchange = function () { $("videoOpts").style.display = this.checked ? "" : "none"; persist(); };
 Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (c) {
   c.onclick = function () { c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true"); persist(); };

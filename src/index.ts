@@ -131,6 +131,8 @@ Mirror (asset extraction — for authorized sites / design reference):
   --mirror               download the site's HTML + same-origin assets (CSS/JS/
                          images/fonts/SVG) into a mirror/ folder + manifest.json.
                          Turns off Lighthouse/axe/links and the screenshot grid.
+  --mirror-media         media-only: download just images + video/audio (skips
+                         HTML/CSS/JS/fonts). Implies --mirror and media capture.
   --mirror-video         also download self-hosted media (MP4/WebM) and reassemble
                          HLS/DASH streams via yt-dlp/ffmpeg (skipped if not on PATH);
                          implies --mirror. No DRM bypass.
@@ -182,6 +184,7 @@ function parseCli(): ParsedCli {
         "mirror-video":        { type: "boolean" },
         "mirror-cross-origin": { type: "boolean" },
         "mirror-rewrite":      { type: "boolean" },
+        "mirror-media":        { type: "boolean" },
         "help":           { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -271,11 +274,15 @@ function parseCli(): ParsedCli {
   // turns off the audit grid (Lighthouse/axe/links + the screenshot phase) so the
   // run downloads assets instead of auditing. Recon stays on (it's cheap and the
   // tech fingerprint is useful context); pass --no-recon to skip it too.
+  const mirrorMedia = Boolean(values["mirror-media"]);
   const mirror =
     Boolean(values["mirror"]) ||
     Boolean(values["mirror-video"]) ||
     Boolean(values["mirror-cross-origin"]) ||
-    Boolean(values["mirror-rewrite"]);
+    Boolean(values["mirror-rewrite"]) ||
+    mirrorMedia;
+  // Media-only implies media capture (images + video/audio + HLS/DASH).
+  const mirrorVideo = Boolean(values["mirror-video"]) || mirrorMedia;
 
   const options: RunOptions = {
     noLighthouse: Boolean(values["no-lighthouse"]) || mirror,
@@ -297,9 +304,10 @@ function parseCli(): ParsedCli {
     // --home-ip implies the check; supplying a baseline is itself opting in.
     verifyIp:     Boolean(values["verify-ip"]) || values["home-ip"] !== undefined,
     mirror,
-    mirrorVideo:       Boolean(values["mirror-video"]),
+    mirrorVideo,
     mirrorCrossOrigin: Boolean(values["mirror-cross-origin"]),
     mirrorRewrite:     Boolean(values["mirror-rewrite"]),
+    mirrorMedia,
   };
 
   const urls = expandUrlSources(positionals);
