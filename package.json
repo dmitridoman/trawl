@@ -3,7 +3,8 @@
   "version": "0.1.1",
   "description": "Crawl a site and screenshot every internal page at mobile/tablet/desktop, then zip the lot.",
   "bin": {
-    "crawlshot": "dist/index.js"
+    "crawlshot": "dist/index.js",
+    "crawlshot-ui": "dist/server.js"
   },
   "files": [
     "dist",
@@ -13,6 +14,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
+    "serve": "node dist/server.js",
+    "serve:dev": "tsx src/server.ts",
     "prepare": "tsup",
     "prepublishOnly": "tsup",
     "postinstall": "playwright install chromium",

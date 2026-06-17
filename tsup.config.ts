@@ -1,12 +1,12 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: ["src/index.ts", "src/server.ts"],
   format: ["cjs"],
   target: "node20",
   banner: { js: "#!/usr/bin/env node" },
   clean: true,
   minify: false,
   sourcemap: false,
-  onSuccess: "chmod +x dist/index.js",
+  onSuccess: "chmod +x dist/index.js dist/server.js",
 });

@@ -235,6 +235,12 @@ export type RunOptions = {
   videoSchemes: string[];
   verifyIp: boolean;
   homeIp: string | null;
+  // Mirror mode: download the site's own assets to disk (asset extraction /
+  // design reference) instead of running the audit grid. See src/mirror.ts.
+  mirror: boolean;
+  mirrorVideo: boolean;        // also download self-hosted media + reassemble HLS/DASH
+  mirrorCrossOrigin: boolean;  // also download cross-origin (CDN) assets
+  mirrorRewrite: boolean;      // rewrite saved HTML/CSS URLs to local paths for offline browsing
 };
 
 // Public exit IP + geo/ASN as the world sees this machine, with ip-api's

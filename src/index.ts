@@ -31,6 +31,17 @@ import { checkLinks } from "./links";
 import { buildResults, writeResults, type Results } from "./results";
 import { writeCompareReport } from "./compare";
 import { recordVideos } from "./video";
+import {
+  createMirrorState,
+  attachMirrorListener,
+  mirrorPage,
+  reassembleStreams,
+  completeMirrorAssets,
+  rewriteForOffline,
+  writeMirrorManifest,
+  mirrorSummary,
+  type MirrorState,
+} from "./mirror";
 import { detectTech, rollupTech, JS_GLOBAL_PATHS, type TechInput } from "./tech";
 import { correlateVulnerabilities } from "./cve";
 import { lookupDomain, lookupDns, lookupGeo, lookupExitIp, checkEmailSecurity } from "./domain";
@@ -116,6 +127,17 @@ Privacy:
   --verify-ip            abort before crawling unless the public exit IP looks like a VPN/proxy
   --home-ip <ip>         your real (VPN-off) IP; aborts if the exit IP matches it (implies --verify-ip)
 
+Mirror (asset extraction — for authorized sites / design reference):
+  --mirror               download the site's HTML + same-origin assets (CSS/JS/
+                         images/fonts/SVG) into a mirror/ folder + manifest.json.
+                         Turns off Lighthouse/axe/links and the screenshot grid.
+  --mirror-video         also download self-hosted media (MP4/WebM) and reassemble
+                         HLS/DASH streams via yt-dlp/ffmpeg (skipped if not on PATH);
+                         implies --mirror. No DRM bypass.
+  --mirror-cross-origin  also download assets served from other origins (CDNs)
+  --mirror-rewrite       rewrite saved HTML/CSS URLs to local paths so the mirror
+                         browses offline (modifies the saved files in place)
+
 Performance:
   --concurrency <N>      parallel pages in flight (default ${DEFAULT_CONCURRENCY})
 
@@ -156,6 +178,10 @@ function parseCli(): ParsedCli {
         "video-scheme":   { type: "string", multiple: true },
         "verify-ip":      { type: "boolean" },
         "home-ip":        { type: "string" },
+        "mirror":              { type: "boolean" },
+        "mirror-video":        { type: "boolean" },
+        "mirror-cross-origin": { type: "boolean" },
+        "mirror-rewrite":      { type: "boolean" },
         "help":           { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -241,10 +267,20 @@ function parseCli(): ParsedCli {
   }
   const videoSchemes = rawSchemes.length > 0 ? rawSchemes : ["light"];
 
+  // Mirror mode is asset-focused: --mirror-video implies --mirror, and either one
+  // turns off the audit grid (Lighthouse/axe/links + the screenshot phase) so the
+  // run downloads assets instead of auditing. Recon stays on (it's cheap and the
+  // tech fingerprint is useful context); pass --no-recon to skip it too.
+  const mirror =
+    Boolean(values["mirror"]) ||
+    Boolean(values["mirror-video"]) ||
+    Boolean(values["mirror-cross-origin"]) ||
+    Boolean(values["mirror-rewrite"]);
+
   const options: RunOptions = {
-    noLighthouse: Boolean(values["no-lighthouse"]),
-    noAxe:        Boolean(values["no-axe"]),
-    noLinks:      Boolean(values["no-links"]),
+    noLighthouse: Boolean(values["no-lighthouse"]) || mirror,
+    noAxe:        Boolean(values["no-axe"]) || mirror,
+    noLinks:      Boolean(values["no-links"]) || mirror,
     noRecon:      Boolean(values["no-recon"]),
     noCve:        Boolean(values["no-cve"]),
     maxPages:     num(values["max-pages"], "max-pages"),
@@ -260,6 +296,10 @@ function parseCli(): ParsedCli {
     homeIp:       homeIp(values["home-ip"]),
     // --home-ip implies the check; supplying a baseline is itself opting in.
     verifyIp:     Boolean(values["verify-ip"]) || values["home-ip"] !== undefined,
+    mirror,
+    mirrorVideo:       Boolean(values["mirror-video"]),
+    mirrorCrossOrigin: Boolean(values["mirror-cross-origin"]),
+    mirrorRewrite:     Boolean(values["mirror-rewrite"]),
   };
 
   const urls = expandUrlSources(positionals);
@@ -320,6 +360,7 @@ type CrawlOutput = {
   consoleEvents: Map<string, ConsoleEvent[]>;
   outboundLinks: { fromSlug: string; url: string; text?: string }[];
   baseOrigin: string;
+  mirror: MirrorState | null;
 };
 
 // Gather the passive fingerprint inputs the page exposes (script URLs, <meta>
@@ -401,10 +442,11 @@ function passesScope(url: string, opts: RunOptions): boolean {
 
 type CrawlQueueItem = { url: string; depth: number };
 
-async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
+async function crawl(baseUrl: string, opts: RunOptions, outDir: string): Promise<CrawlOutput> {
   const visited = new Set<string>();
   const queued = new Set<string>();
   const queue: CrawlQueueItem[] = [];
+  const mirror = opts.mirror ? createMirrorState(outDir, opts) : null;
 
   const enqueue = (url: string, depth: number) => {
     const key = new URL(url).pathname.replace(/\/$/, "") || "/";
@@ -446,6 +488,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
 
       if (!resolvedOrigin) {
         resolvedOrigin = new URL(page.url()).origin;
+        if (mirror) mirror.origin = resolvedOrigin;
       }
 
       const resolvedUrl = page.url();
@@ -533,6 +576,12 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         outboundLinks.push({ fromSlug: slug, url: out.url, text: out.text || undefined });
       }
 
+      if (mirror) {
+        await mirrorPage(page, page.context(), slug, resolvedUrl, mirror).catch((e) =>
+          console.warn(`    mirror failed for ${slug}: ${(e as Error).message}`),
+        );
+      }
+
       console.log(
         `  crawled → ${resolvedKey}  (d=${item.depth}, ${linkData.internalForQueue.length} internal, ${newCount} new, ${linkData.outbound.length} outbound, status ${status})`,
       );
@@ -555,6 +604,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
       viewport: { width: 1440, height: 900 },
     });
     const page = await ctx.newPage();
+    const detachMirror = mirror ? attachMirrorListener(page, ctx, mirror) : null;
     try {
       while (true) {
         if (stopped && queue.length === 0) return;
@@ -576,6 +626,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
         }
       }
     } finally {
+      detachMirror?.();
       await page.close().catch(() => {});
       await ctx.close().catch(() => {});
     }
@@ -594,6 +645,7 @@ async function crawl(baseUrl: string, opts: RunOptions): Promise<CrawlOutput> {
     consoleEvents,
     outboundLinks,
     baseOrigin: resolvedOrigin ?? new URL(baseUrl).origin,
+    mirror,
   };
 }
 
@@ -736,8 +788,10 @@ async function runSite(
   fs.mkdirSync(outDir, { recursive: true });
 
   console.log(`\nCrawling ${url}...\n`);
-  const crawled = await crawl(url, options);
-  console.log(`\nFound ${crawled.pages.length} page(s). Shooting...\n`);
+  const crawled = await crawl(url, options, outDir);
+  console.log(
+    `\nFound ${crawled.pages.length} page(s). ${options.mirror ? "Mirroring assets (screenshots skipped)..." : "Shooting..."}\n`,
+  );
 
   // Kick off passive recon and CVE correlation now so they overlap with the
   // (slower) screenshot/Lighthouse phases. Tech is already in hand from crawl.
@@ -755,7 +809,9 @@ async function runSite(
         return [];
       });
 
-  const axeResults = await shoot(crawled.pages, outDir, !options.noAxe, options);
+  const axeResults = options.mirror
+    ? new Map<string, AxeSummary>()
+    : await shoot(crawled.pages, outDir, !options.noAxe, options);
 
   let lighthouse: Map<string, LighthouseDetail> | null = null;
   if (!options.noLighthouse && crawled.pages.length > 0) {
@@ -786,6 +842,21 @@ async function runSite(
     const schemeList = options.videoSchemes.join(", ");
     console.log(`\nRecording videos (${vpList} × ${schemeList})...\n`);
     await recordVideos(crawled.pages, outDir, options);
+  }
+
+  if (crawled.mirror) {
+    await reassembleStreams(crawled.mirror);
+    const extra = await completeMirrorAssets(crawled.mirror, options.authStorage);
+    if (extra) console.log(`  + mirror: fetched ${extra} CSS-referenced asset(s) the page didn't load`);
+    if (options.mirrorRewrite) {
+      const touched = rewriteForOffline(crawled.mirror);
+      console.log(`  ↻ mirror: rewrote URLs in ${touched} file(s) for offline browsing`);
+    }
+    writeMirrorManifest(crawled.mirror, url);
+    const m = mirrorSummary(crawled.mirror);
+    console.log(
+      `\nMirror: ${m.pages} page(s) HTML, ${m.saved} asset(s) saved${m.skipped ? `, ${m.skipped} skipped` : ""} → ${crawled.mirror.root}`,
+    );
   }
 
   let siteIntel: SiteIntel | null = null;
