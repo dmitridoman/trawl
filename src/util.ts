@@ -241,6 +241,7 @@ export type RunOptions = {
   mirrorVideo: boolean;        // also download self-hosted media + reassemble HLS/DASH
   mirrorCrossOrigin: boolean;  // also download cross-origin (CDN) assets
   mirrorRewrite: boolean;      // rewrite saved HTML/CSS URLs to local paths for offline browsing
+  mirrorMedia: boolean;        // media-only: just images + video/audio (skip HTML/CSS/JS/fonts)
 };
 
 // Public exit IP + geo/ASN as the world sees this machine, with ip-api's

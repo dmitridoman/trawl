@@ -86,6 +86,7 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
   bool("mirrorVideo", "--mirror-video");
   bool("mirrorCrossOrigin", "--mirror-cross-origin");
   bool("mirrorRewrite", "--mirror-rewrite");
+  bool("mirrorMedia", "--mirror-media");
   bool("noLighthouse", "--no-lighthouse");
   bool("noAxe", "--no-axe");
   bool("noLinks", "--no-links");
