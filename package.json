@@ -4,6 +4,7 @@
   "description": "Drag a net over any site — mirror pages and media, screenshot every view, and sweep for tech/security/recon signals, then zip the lot.",
   "bin": {
     "trawl": "dist/index.js",
+    "trawl-ar": "dist/ar.js",
     "trawl-ui": "dist/server.js"
   },
   "files": [
@@ -14,6 +15,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
+    "ar:dev": "tsx src/ar.ts",
+    "test:ar": "npm run build && tsx test/ar-smoke.ts",
     "serve": "node dist/server.js",
     "serve:dev": "tsx src/server.ts",
     "prepare": "tsup",
@@ -48,8 +51,11 @@
   "dependencies": {
     "@axe-core/playwright": "^4.11.3",
     "archiver": "^8.0.0",
+    "binaryen": "^130.0.0",
     "lighthouse": "^13.3.0",
-    "playwright": "^1.59.1"
+    "playwright": "^1.59.1",
+    "prettier": "^3.8.4",
+    "wabt": "^1.0.39"
   },
   "devDependencies": {
     "@types/archiver": "^7.0.0",
