@@ -1,7 +1,12 @@
+// Each viewport emulates its real device class, not just a window width:
+//  - deviceScaleFactor 2 → crisp retina-quality shots at every breakpoint
+//  - isMobile/hasTouch    → phone & tablet trigger the mobile meta-viewport and
+//                           pointer:coarse / hover:none media queries, so the
+//                           capture matches what the device actually renders
 export const VIEWPORTS = [
-  { name: "phone",   width: 375,  height: 812  },
-  { name: "tablet",  width: 768,  height: 1024 },
-  { name: "desktop", width: 1440, height: 900  },
+  { name: "phone",   width: 375,  height: 812,  deviceScaleFactor: 2, isMobile: true,  hasTouch: true  },
+  { name: "tablet",  width: 768,  height: 1024, deviceScaleFactor: 2, isMobile: true,  hasTouch: true  },
+  { name: "desktop", width: 1440, height: 900,  deviceScaleFactor: 2, isMobile: false, hasTouch: false },
 ] as const;
 
 export const COLOR_SCHEMES = ["light", "dark"] as const;
@@ -207,6 +212,44 @@ export type VulnFinding = {
   confidence: "confirmed" | "potential";
 };
 
+// --- Off-page / ranking signals (free external APIs; see src/offpage.ts) ----
+// Each is null when its API key (or, for Search Console, its credentials) is
+// absent, so the whole block degrades gracefully like the rest of recon.
+
+export type AuthorityInfo = {
+  domainRating: number | null; // OpenPageRank decimal, 0..10 (backlink-derived)
+  rank: number | null; // global rank position, when supplied
+  source: "openpagerank";
+} | null;
+
+export type CwvMetric = { p75: number | null; rating: "good" | "ni" | "poor" | null };
+
+export type FieldCwvInfo = {
+  lcp: CwvMetric; // ms
+  inp: CwvMetric; // ms
+  cls: CwvMetric; // unitless
+  overall: "good" | "ni" | "poor" | null;
+  source: "crux"; // real Chrome-user field data — distinct from lab Lighthouse
+} | null;
+
+export type RankingResult = {
+  keyword: string;
+  position: number | null; // 1-based position in the SERP, null = outside the checked window
+  found: boolean;
+};
+
+export type GscQuery = { query: string; clicks: number; impressions: number; position: number };
+
+export type SearchConsoleInfo = {
+  clicks: number;
+  impressions: number;
+  ctr: number; // 0..1
+  position: number; // average
+  topQueries: GscQuery[];
+  rangeDays: number;
+  source: "search-console";
+} | null;
+
 export type SiteIntel = {
   domain: DomainInfo;
   dns: DnsRecords;
@@ -215,6 +258,11 @@ export type SiteIntel = {
   tls: TlsInfo;
   technologies: TechFinding[]; // site-level rollup, deduped across pages
   vulnerabilities: VulnFinding[];
+  // Off-page / ranking (free external APIs; null when their key is absent)
+  authority: AuthorityInfo;
+  fieldCwv: FieldCwvInfo;
+  rankings: RankingResult[] | null;
+  searchConsole: SearchConsoleInfo;
 };
 
 export type RunOptions = {
@@ -223,11 +271,18 @@ export type RunOptions = {
   noLinks: boolean;
   noRecon: boolean;
   noCve: boolean;
+  noPagerank: boolean; // skip OpenPageRank domain-authority lookup
+  noCrux: boolean; // skip Google CrUX field Core Web Vitals
+  rankKeywords: string[] | null; // --rank keywords for Brave SERP position checks
+  gscCredentials: string | null; // --gsc-credentials path for Search Console
   maxPages: number | null;
   maxDepth: number | null;
   include: RegExp | null;
   exclude: RegExp | null;
   concurrency: number;
+  // Screenshot capture mode: full-page scroll (default), above-the-fold viewport
+  // only, or both (full-page + a `<slug>@fold.png` viewport crop). See shoot().
+  shotMode: "fullpage" | "viewport" | "both";
   authStorage: string | null;
   video: boolean;
   videoPages: RegExp | null;

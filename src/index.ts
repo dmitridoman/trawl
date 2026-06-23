@@ -23,7 +23,7 @@ import {
   type TechResult,
   type SiteIntel,
 } from "./util";
-import { dismissCookieBanner } from "./cookies";
+import { dismissCookieBanner, hideCookieBanners } from "./cookies";
 import { extractSeo } from "./seo";
 import { scoreHeaders } from "./security";
 import { runAxe } from "./axe";
@@ -46,6 +46,7 @@ import { detectTech, rollupTech, JS_GLOBAL_PATHS, type TechInput } from "./tech"
 import { correlateVulnerabilities } from "./cve";
 import { lookupDomain, lookupDns, lookupGeo, lookupExitIp, checkEmailSecurity } from "./domain";
 import { inspectTls } from "./tls";
+import { gatherOffpageIntel } from "./offpage";
 
 const STILL_CSS = `
 *, *::before, *::after {
@@ -92,6 +93,74 @@ html { overflow: auto !important; }
 body { overflow: auto !important; }
 `;
 
+// Force scroll-reveal libraries into their "shown" state. Many themes start
+// content at opacity:0 / translated and reveal it via IntersectionObserver on
+// scroll. The scroll pass below triggers most of them, but with animations
+// frozen (STILL_CSS) a few can get stuck mid-reveal — this is the safety net so
+// below-the-fold sections never render as blank space in a full-page shot.
+const REVEAL_CSS = `
+[data-aos], .aos-init, .aos-animate,
+.wow, .animated, .reveal, .revealed, .is-visible, .in-view, .inview,
+[class*="fade" i], [class*="reveal" i], [class*="appear" i],
+[class*="animate" i], [class*="slide-in" i], [class*="scroll-in" i] {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: none !important;
+  filter: none !important;
+  clip-path: none !important;
+}
+`;
+
+// Walk the full page top-to-bottom to trigger IntersectionObserver reveals and
+// lazy-loaded images, wait for those images to settle, then return to the top.
+// Bounded so a never-idle / infinite-scroll page can't hang the shoot.
+async function autoScrollAndSettle(page: Page): Promise<void> {
+  await page
+    .evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        const step = Math.max(200, Math.floor(window.innerHeight * 0.85));
+        const startedAt = Date.now();
+        let y = 0;
+        const tick = () => {
+          window.scrollTo(0, y);
+          y += step;
+          const atBottom =
+            y >= document.documentElement.scrollHeight - window.innerHeight;
+          if (atBottom || Date.now() - startedAt > 8000) {
+            window.scrollTo(0, document.documentElement.scrollHeight);
+            setTimeout(resolve, 200);
+          } else {
+            setTimeout(tick, 90);
+          }
+        };
+        tick();
+      });
+    })
+    .catch(() => {});
+
+  // Let lazy <img> fetches (kicked off by the scroll) finish — capped at 3s.
+  await page
+    .evaluate(async () => {
+      const imgs = Array.from(document.images);
+      await Promise.race([
+        Promise.all(
+          imgs.map((img) =>
+            img.complete && img.naturalWidth > 0
+              ? null
+              : new Promise<void>((res) => {
+                  img.addEventListener("load", () => res(), { once: true });
+                  img.addEventListener("error", () => res(), { once: true });
+                }),
+          ),
+        ),
+        new Promise<void>((res) => setTimeout(res, 3000)),
+      ]);
+    })
+    .catch(() => {});
+
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+}
+
 const HELP = `
 Trawl — crawl a site and audit every internal page
 
@@ -113,6 +182,19 @@ Audit flags:
   --no-links             skip outbound-link HEAD checks
   --no-recon             skip passive recon (WHOIS/DNS/geo, tech, TLS, email)
   --no-cve               skip known-vulnerability correlation (keeps other recon)
+
+Capture:
+  --shot <mode>          screenshot mode: fullpage (default, tall scroll capture),
+                         viewport (above-the-fold crop only), or both (full-page
+                         plus an above-the-fold <slug>@fold.png)
+
+SEO / ranking flags (free external APIs — see README for the env keys):
+  --rank "kw1, kw2"      check this domain's SERP position for each keyword
+                         (Brave Search; needs CRAWLSHOT_BRAVE_KEY)
+  --gsc-credentials <p>  pull owner Search Console stats from a credentials JSON
+                         (access_token or a service-account key)
+  --no-pagerank          skip the OpenPageRank domain-authority lookup
+  --no-crux              skip the Google CrUX field Core Web Vitals lookup
 
 Scope flags:
   --max-pages <N>        stop after N pages have been crawled
@@ -168,12 +250,17 @@ function parseCli(): ParsedCli {
         "no-links":       { type: "boolean" },
         "no-recon":       { type: "boolean" },
         "no-cve":         { type: "boolean" },
+        "no-pagerank":    { type: "boolean" },
+        "no-crux":        { type: "boolean" },
+        "rank":           { type: "string" },
+        "gsc-credentials":{ type: "string" },
         "max-pages":      { type: "string" },
         "max-depth":      { type: "string" },
         "include":        { type: "string" },
         "exclude":        { type: "string" },
         "auth-storage":   { type: "string" },
         "concurrency":    { type: "string" },
+        "shot":           { type: "string" },
         "video":          { type: "boolean" },
         "video-pages":    { type: "string" },
         "video-viewport": { type: "string", multiple: true },
@@ -248,6 +335,32 @@ function parseCli(): ParsedCli {
     return raw;
   };
 
+  const rankKeywords = (raw: string | undefined): string[] | null => {
+    if (raw === undefined) return null;
+    const list = raw.split(",").map((k) => k.trim()).filter(Boolean);
+    if (list.length === 0) {
+      console.error(`trawl: --rank needs at least one keyword, e.g. --rank "luxury car hire london, chauffeur london"`);
+      process.exit(1);
+    }
+    return list;
+  };
+
+  const credsFile = (raw: string | undefined): string | null => {
+    if (raw === undefined) return null;
+    const resolved = path.resolve(raw);
+    try {
+      if (!fs.statSync(resolved).isFile()) {
+        console.error(`trawl: --gsc-credentials must point to a file, got ${raw}`);
+        process.exit(1);
+      }
+      JSON.parse(fs.readFileSync(resolved, "utf8"));
+    } catch (err) {
+      console.error(`trawl: --gsc-credentials is not a readable JSON file: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    return resolved;
+  };
+
   const videoEnabled = Boolean(values["video"]);
 
   const rawViewports = (values["video-viewport"] as string[] | undefined) ?? [];
@@ -284,17 +397,30 @@ function parseCli(): ParsedCli {
   // Media-only implies media capture (images + video/audio + HLS/DASH).
   const mirrorVideo = Boolean(values["mirror-video"]) || mirrorMedia;
 
+  const SHOT_MODES = ["fullpage", "viewport", "both"] as const;
+  const rawShot = values["shot"] as string | undefined;
+  if (rawShot !== undefined && !SHOT_MODES.includes(rawShot as typeof SHOT_MODES[number])) {
+    console.error(`trawl: --shot must be one of: ${SHOT_MODES.join(", ")}, got "${rawShot}"`);
+    process.exit(1);
+  }
+  const shotMode = (rawShot ?? "fullpage") as RunOptions["shotMode"];
+
   const options: RunOptions = {
     noLighthouse: Boolean(values["no-lighthouse"]) || mirror,
     noAxe:        Boolean(values["no-axe"]) || mirror,
     noLinks:      Boolean(values["no-links"]) || mirror,
     noRecon:      Boolean(values["no-recon"]),
     noCve:        Boolean(values["no-cve"]),
+    noPagerank:   Boolean(values["no-pagerank"]),
+    noCrux:       Boolean(values["no-crux"]),
+    rankKeywords: rankKeywords(values["rank"]),
+    gscCredentials: credsFile(values["gsc-credentials"]),
     maxPages:     num(values["max-pages"], "max-pages"),
     maxDepth:     num(values["max-depth"], "max-depth"),
     include:      re(values["include"], "include"),
     exclude:      re(values["exclude"], "exclude"),
     concurrency:  num(values["concurrency"], "concurrency") ?? DEFAULT_CONCURRENCY,
+    shotMode,
     authStorage:  authStorage(values["auth-storage"]),
     video:        videoEnabled,
     videoPages:   re(values["video-pages"], "video-pages"),
@@ -493,6 +619,7 @@ async function crawl(baseUrl: string, opts: RunOptions, outDir: string): Promise
       const response = await page.goto(item.url, { waitUntil: "domcontentloaded", timeout: 30000 });
       await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
       await dismissCookieBanner(page);
+      await hideCookieBanners(page);
 
       if (!resolvedOrigin) {
         resolvedOrigin = new URL(page.url()).origin;
@@ -661,23 +788,41 @@ async function crawl(baseUrl: string, opts: RunOptions, outDir: string): Promise
 // and email-spoofing posture. Runs once per site against the resolved origin.
 // `technologies` and `vulnerabilities` are filled in by the caller after the
 // per-page tech results have been rolled up. Returns null on hard failure.
-async function gatherSiteIntel(origin: string): Promise<SiteIntel | null> {
+async function gatherSiteIntel(origin: string, options: RunOptions): Promise<SiteIntel | null> {
   let hostname: string;
   try {
     hostname = new URL(origin).hostname;
   } catch {
     return null;
   }
-  const [domain, dns, tls] = await Promise.all([
+  const [domain, dns, tls, offpage] = await Promise.all([
     lookupDomain(hostname),
     lookupDns(hostname),
     inspectTls(hostname),
+    gatherOffpageIntel(origin, {
+      noPagerank: options.noPagerank,
+      noCrux: options.noCrux,
+      rankKeywords: options.rankKeywords,
+      gscCredentials: options.gscCredentials,
+    }),
   ]);
   const [geo, email] = await Promise.all([
     lookupGeo(dns.a[0]),
     checkEmailSecurity(hostname, dns.txt),
   ]);
-  return { domain, dns, geo, email, tls, technologies: [], vulnerabilities: [] };
+  return {
+    domain,
+    dns,
+    geo,
+    email,
+    tls,
+    technologies: [],
+    vulnerabilities: [],
+    authority: offpage.authority,
+    fieldCwv: offpage.fieldCwv,
+    rankings: offpage.rankings,
+    searchConsole: offpage.searchConsole,
+  };
 }
 
 type ShootJob = { rec: PageRecord; scheme: typeof COLOR_SCHEMES[number]; vp: typeof VIEWPORTS[number] };
@@ -686,7 +831,7 @@ async function shoot(
   pages: PageRecord[],
   outDir: string,
   runAxeScan: boolean,
-  options: Pick<RunOptions, "authStorage" | "concurrency">,
+  options: Pick<RunOptions, "authStorage" | "concurrency" | "shotMode">,
 ): Promise<Map<string, AxeSummary>> {
   const browser: Browser = await chromium.launch({
     args: ["--ignore-certificate-errors"],
@@ -724,6 +869,9 @@ async function shoot(
           ignoreHTTPSErrors: true,
           storageState: options.authStorage ?? undefined,
           viewport: { width: vp.width, height: vp.height },
+          deviceScaleFactor: vp.deviceScaleFactor,
+          isMobile: vp.isMobile,
+          hasTouch: vp.hasTouch,
           colorScheme: scheme,
           reducedMotion: "reduce",
         });
@@ -747,14 +895,41 @@ async function shoot(
           }
         }
 
+        // Freeze motion, force reveal-on-scroll content visible, hide banners.
         await page.addStyleTag({ content: STILL_CSS }).catch(() => {});
+        await page.addStyleTag({ content: REVEAL_CSS }).catch(() => {});
         await page.addStyleTag({ content: HIDE_BANNERS_CSS }).catch(() => {});
-        await page.waitForTimeout(500);
-        await page.screenshot({
-          path: path.join(outDir, scheme, vp.name, `${rec.slug}.png`),
-          fullPage: true,
-        });
-        console.log(`  ✓ ${rec.slug} @ ${scheme}/${vp.name} (${vp.width}px)`);
+
+        // Scroll the whole page so IntersectionObserver reveals fire and lazy
+        // images load, then settle back at the top before the full-page shot.
+        await autoScrollAndSettle(page);
+
+        // Banners often render late or re-appear after interaction — clear them
+        // again now that the page is fully hydrated.
+        await dismissCookieBanner(page);
+        await hideCookieBanners(page);
+
+        await page.waitForTimeout(400);
+
+        // shotMode: "fullpage" (default) → tall scroll capture as <slug>.png;
+        // "viewport" → above-the-fold crop, also as <slug>.png (keeps report.ts
+        // happy); "both" → full-page <slug>.png + an above-the-fold <slug>@fold.png.
+        const wantFold = options.shotMode !== "fullpage";
+        const wantFull = options.shotMode !== "viewport";
+        if (wantFull) {
+          await page.screenshot({
+            path: path.join(outDir, scheme, vp.name, `${rec.slug}.png`),
+            fullPage: true,
+          });
+        }
+        if (wantFold) {
+          const foldName = options.shotMode === "viewport" ? `${rec.slug}.png` : `${rec.slug}@fold.png`;
+          await page.screenshot({
+            path: path.join(outDir, scheme, vp.name, foldName),
+            fullPage: false,
+          });
+        }
+        console.log(`  ✓ ${rec.slug} @ ${scheme}/${vp.name} (${vp.width}px, ${options.shotMode})`);
       } catch {
         console.warn(`  ✗ ${rec.slug} @ ${scheme}/${vp.name} — failed`);
       } finally {
@@ -806,7 +981,7 @@ async function runSite(
   const techRollup = options.noRecon ? [] : rollupTech([...crawled.tech.values()]);
   const reconP: Promise<SiteIntel | null> = options.noRecon
     ? Promise.resolve(null)
-    : gatherSiteIntel(crawled.baseOrigin).catch((err) => {
+    : gatherSiteIntel(crawled.baseOrigin, options).catch((err) => {
         console.warn(`Recon phase failed: ${(err as Error).message}`);
         return null;
       });
