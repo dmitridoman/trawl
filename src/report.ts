@@ -353,6 +353,8 @@ function siteIntelCard(intel: SiteIntel): string {
       </div>`
     : "";
 
+  const offpage = offpageSection(intel);
+
   return `<section class="intel">
     <h2>Site intelligence <span class="intel-sub">passive recon — public records &amp; what the site exposes</span></h2>
     <div class="intel-cols">
@@ -361,7 +363,89 @@ function siteIntelCard(intel: SiteIntel): string {
     </div>
     <div class="intel-cols">${tlsBlock}${emailBlock}</div>
     ${techRollup}
+    ${offpage}
   </section>`;
+}
+
+// Off-page / ranking signals (free external APIs). Each block is omitted when its
+// signal is null (no key / not in dataset), so the section appears only with data.
+function cwvTier(rating: "good" | "ni" | "poor" | null): "good" | "ok" | "bad" | "muted" {
+  return rating === "good" ? "good" : rating === "ni" ? "ok" : rating === "poor" ? "bad" : "muted";
+}
+
+function fmtCwvMs(v: number | null): string {
+  if (v == null) return "—";
+  return v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`;
+}
+
+function offpageSection(intel: SiteIntel): string {
+  const authority = intel.authority;
+  const cwv = intel.fieldCwv;
+  const rankings = intel.rankings;
+  const sc = intel.searchConsole;
+  if (!authority && !cwv && (!rankings || rankings.length === 0) && !sc) return "";
+
+  const drTier = (dr: number | null) => (dr == null ? "ok" : dr >= 5 ? "good" : dr >= 2.5 ? "ok" : "bad");
+  const authorityBlock = authority
+    ? `<div class="intel-block">
+        <div class="intel-block-head"><h3>Domain authority</h3><span class="grade-pill grade-${drTier(authority.domainRating)}">${authority.domainRating != null ? authority.domainRating.toFixed(1) : "—"}</span></div>
+        <div class="intel-grid">
+          ${reconCell("page rank (0–10)", authority.domainRating != null ? authority.domainRating.toFixed(2) : null)}
+          ${reconCell("global rank", authority.rank != null ? `#${authority.rank.toLocaleString()}` : null)}
+          ${reconCell("source", "OpenPageRank")}
+        </div>
+        <p class="intel-note">Backlink-derived authority. Low here alongside healthy on-page scores points the SEO problem off-page (links / content), not at the build.</p>
+      </div>`
+    : "";
+
+  const cwvCell = (label: string, m: { p75: number | null; rating: "good" | "ni" | "poor" | null }, fmt: (v: number) => string) =>
+    `<div class="intel-cell"><span class="intel-key">${escapeHtml(label)}</span><span class="intel-val intel-cwv-${cwvTier(m.rating)}">${m.p75 != null ? escapeHtml(fmt(m.p75)) : "—"}</span></div>`;
+  const cwvBlock = cwv
+    ? `<div class="intel-block">
+        <div class="intel-block-head"><h3>Field Core Web Vitals</h3><span class="grade-pill grade-${cwvTier(cwv.overall)}">${cwv.overall ? cwv.overall.toUpperCase() : "—"}</span></div>
+        <div class="intel-grid">
+          ${cwvCell("LCP (p75)", cwv.lcp, fmtCwvMs)}
+          ${cwvCell("INP (p75)", cwv.inp, fmtCwvMs)}
+          ${cwvCell("CLS (p75)", cwv.cls, (v) => v.toFixed(2))}
+        </div>
+        <p class="intel-note">Real Chrome-user data (CrUX) — the field metrics Google actually ranks on, distinct from the per-page lab Lighthouse scores below.</p>
+      </div>`
+    : "";
+
+  const rankTier = (r: { position: number | null; found: boolean }) =>
+    !r.found || r.position == null ? "bad" : r.position <= 10 ? "good" : r.position <= 20 ? "ok" : "bad";
+  const rankBlock = rankings && rankings.length > 0
+    ? `<div class="intel-block">
+        <h3>Search rankings <span class="intel-sub">Brave Search · external proxy for Google</span></h3>
+        <div class="intel-grid">
+          ${rankings
+            .map((r) => `<div class="intel-cell"><span class="intel-key">${escapeHtml(r.keyword)}</span><span class="intel-val intel-cwv-${rankTier(r)}">${r.found && r.position != null ? `#${r.position}` : "not in top 20"}</span></div>`)
+            .join("")}
+        </div>
+        <p class="intel-note">Where this domain sits in Brave's organic results for each keyword. Brave is an independent index, so read it as directional rather than exact Google position.</p>
+      </div>`
+    : "";
+
+  const scBlock = sc
+    ? `<div class="intel-block">
+        <h3>Search Console <span class="intel-sub">owner data · last ${sc.rangeDays} days</span></h3>
+        <div class="intel-grid">
+          ${reconCell("clicks", sc.clicks.toLocaleString())}
+          ${reconCell("impressions", sc.impressions.toLocaleString())}
+          ${reconCell("avg position", sc.position ? sc.position.toFixed(1) : null)}
+          ${reconCell("CTR", `${(sc.ctr * 100).toFixed(1)}%`)}
+        </div>
+        ${sc.topQueries.length > 0
+          ? `<table class="links-table intel-sc-table"><thead><tr><th>Query</th><th>Clicks</th><th>Impr.</th><th>Pos.</th></tr></thead><tbody>${sc.topQueries
+              .map((q) => `<tr><td>${escapeHtml(q.query)}</td><td>${q.clicks}</td><td>${q.impressions}</td><td>${q.position.toFixed(1)}</td></tr>`)
+              .join("")}</tbody></table>`
+          : ""}
+      </div>`
+    : "";
+
+  return `<h2 class="intel-offpage-head">Off-page &amp; ranking <span class="intel-sub">authority, field performance &amp; SERP position — the half a crawler can't see</span></h2>
+    <div class="intel-cols">${authorityBlock}${cwvBlock}</div>
+    <div class="intel-cols">${rankBlock}${scBlock}</div>`;
 }
 
 function gradePill(grade: string): string {
@@ -590,6 +674,8 @@ function summaryBar(results: Results): string {
     <span class="sum-cell"><span class="sum-key">pages</span><span class="sum-val">${s.pages}</span></span>
     ${s.externalPages > 0 ? `<span class="sum-cell"><span class="sum-key">third-party</span><span class="sum-val">${s.externalPages}</span></span>` : ""}
     ${intel?.domain.ageYears != null ? `<span class="sum-cell"><span class="sum-key">domain age</span><span class="sum-val">${intel.domain.ageYears}y</span></span>` : ""}
+    ${intel?.authority?.domainRating != null ? `<span class="sum-cell"><span class="sum-key">authority</span><span class="sum-val">${intel.authority.domainRating.toFixed(1)}/10</span></span>` : ""}
+    ${intel?.fieldCwv?.overall ? `<span class="sum-cell"><span class="sum-key">field CWV</span><span class="sum-val">${intel.fieldCwv.overall.toUpperCase()}</span></span>` : ""}
     ${intel?.tls ? `<span class="sum-cell"><span class="sum-key">TLS</span><span class="sum-val">${intel.tls.grade}</span></span>` : ""}
     ${intel ? `<span class="sum-cell"><span class="sum-key">email</span><span class="sum-val">${intel.email.grade}${intel.email.spoofable ? " ⚠" : ""}</span></span>` : ""}
     ${intel ? `<span class="sum-cell"><span class="sum-key">tech</span><span class="sum-val">${intel.technologies.length}</span></span>` : ""}
@@ -740,6 +826,12 @@ const CSS = `
   .intel-note-good { color: #10b981; }
   .intel-note-ok { color: #f59e0b; }
   .intel-note-bad { color: #ef4444; }
+  .intel-offpage-head { margin: 18px 0 12px; font-size: 16px; }
+  .intel-cwv-good { color: #10b981; }
+  .intel-cwv-ok { color: #f59e0b; }
+  .intel-cwv-bad { color: #ef4444; }
+  .intel-cwv-muted { color: #6b7280; }
+  .intel-sc-table { margin-top: 12px; }
   .grade-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; font-size: 13px; font-weight: 700; }
   .grade-good { color: #10b981; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); }
   .grade-ok { color: #f59e0b; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); }

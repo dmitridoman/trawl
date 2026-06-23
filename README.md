@@ -100,6 +100,19 @@ Once per site, trawl also assembles an **intelligence panel** at the top of the 
 
 Recon runs by default. Use `--no-recon` to skip it entirely, or `--no-cve` to keep the recon but skip vulnerability correlation (and its rate-limited NVD calls). The fingerprint and vulnerability datasets are vendored under `src/data/`; refresh them with `npm run update-datasets`.
 
+## Off-page & ranking signals
+
+Everything above is the **on-page / technical** half of SEO — what trawl can read from the pages and public records. The intel panel also carries the **off-page / ranking** half: the signals a crawler structurally cannot compute from the page itself. Each comes from a free external API and is chosen so it does **not** duplicate anything trawl already measures. Each is optional — with no key (or, for Search Console, no credentials) it renders as "unavailable" and the run is otherwise unaffected.
+
+- **Domain authority** — a 0–10 backlink-derived rating from **OpenPageRank**. trawl has no other authority signal; this is the "does anyone link to it" number. Set `CRAWLSHOT_OPENPAGERANK_KEY` (free at [domcop.com/openpagerank](https://www.domcop.com/openpagerank/)). Skip with `--no-pagerank`.
+- **Field Core Web Vitals** — real-world p75 LCP / INP / CLS from **Google CrUX**. trawl's Lighthouse is *lab* data measured on this machine; CrUX is the *field* data Google actually ranks on. Set `CRAWLSHOT_GOOGLE_KEY` (a free Google API key with the Chrome UX Report API enabled). Skip with `--no-crux`. Origins with too little real-user traffic aren't in the dataset and render as unavailable.
+- **Keyword rankings** — this domain's SERP position for keywords you pass, via **Brave Search** (an independent index, so directional rather than exact Google position). Opt in with `--rank "kw1, kw2"` and set `CRAWLSHOT_BRAVE_KEY` (free tier at [brave.com/search/api](https://brave.com/search/api/), throttled ~1 req/s, capped at 10 keywords/run).
+- **Search Console** — the owner's *actual* Google performance (clicks, impressions, average position, top queries) from **Google Search Console**. Opt in with `--gsc-credentials <path>` pointing at a JSON file that holds either an `access_token` or a service-account key (`client_email` + `private_key`) with the property shared to it; an optional `siteUrl` field overrides the default (`<origin>/`).
+
+In multi-site compare mode these surface as extra leaderboard columns — **DR**, **Field LCP**, and one column per `--rank` keyword — so a site's authority, field performance, and SERP position sit colour-coded next to its competitors.
+
+> **Scope.** OpenPageRank, CrUX and Brave are read-only public/API lookups about a domain you choose — the same passive posture as the rest of recon. Search Console returns data only for a property you've been granted access to, so it requires the owner's credentials by design.
+
 ## Machine-readable output
 
 Every run writes `results.json` alongside `index.html`:
@@ -173,6 +186,12 @@ Audit:
   --no-lighthouse        skip the Lighthouse audit phase (faster runs)
   --no-axe               skip the axe-core a11y scan
   --no-links             skip outbound-link HEAD checks
+
+SEO / ranking (free external APIs — see "Off-page & ranking signals" + env keys):
+  --rank "kw1, kw2"      check this domain's SERP position per keyword (Brave)
+  --gsc-credentials <p>  pull owner Search Console stats from a credentials JSON
+  --no-pagerank          skip the OpenPageRank domain-authority lookup
+  --no-crux              skip the Google CrUX field Core Web Vitals lookup
 
 Scope:
   --max-pages <N>        stop after N pages have been crawled

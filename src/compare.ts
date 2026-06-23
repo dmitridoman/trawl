@@ -13,10 +13,16 @@ export type SiteSummary = {
   axe: { violations: number; nodes: number } | null;
   console: number;
   brokenLinks: number;
+  // Off-page / ranking (null when the relevant API key was absent for this run)
+  domainRating: number | null; // OpenPageRank 0..10
+  fieldLcpMs: number | null; // CrUX field LCP p75
+  fieldCwvOverall: "good" | "ni" | "poor" | null;
+  rankings: { keyword: string; position: number | null }[] | null;
 };
 
 function summarise(results: Results, dir: string): SiteSummary {
   const s = results.summary;
+  const intel = results.intel;
   return {
     label: results.site.label,
     url: results.site.url,
@@ -28,6 +34,10 @@ function summarise(results: Results, dir: string): SiteSummary {
     axe: s.axe,
     console: s.errors.console + s.errors.pageErrors,
     brokenLinks: s.links.broken,
+    domainRating: intel?.authority?.domainRating ?? null,
+    fieldLcpMs: intel?.fieldCwv?.lcp?.p75 ?? null,
+    fieldCwvOverall: intel?.fieldCwv?.overall ?? null,
+    rankings: intel?.rankings?.map((r) => ({ keyword: r.keyword, position: r.position })) ?? null,
   };
 }
 
@@ -58,7 +68,41 @@ function cell(value: number | null, opts: { bigIsBad?: boolean; suffix?: string 
   return `<td class="cell cell-${t}">${escapeHtml(display)}</td>`;
 }
 
+// Off-page metrics need their own thresholds (not the 0–100 / count assumptions
+// of tier()): authority is bigger-is-better on a 0–10 scale, field LCP is smaller-
+// is-better in ms, SERP position is smaller-is-better and 1-based.
+function cellRaw(display: string, t: "good" | "ok" | "bad" | "muted"): string {
+  return `<td class="cell cell-${t}">${escapeHtml(display)}</td>`;
+}
+
+function drTier(dr: number | null): "good" | "ok" | "bad" | "muted" {
+  if (dr == null) return "muted";
+  return dr >= 5 ? "good" : dr >= 2.5 ? "ok" : "bad";
+}
+
+function lcpTier(ms: number | null): "good" | "ok" | "bad" | "muted" {
+  if (ms == null) return "muted";
+  return ms <= 2500 ? "good" : ms <= 4000 ? "ok" : "bad";
+}
+
+function fmtLcp(ms: number | null): string {
+  if (ms == null) return "—";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+function rankTier(pos: number | null): "good" | "ok" | "bad" | "muted" {
+  if (pos == null) return "muted";
+  return pos <= 10 ? "good" : pos <= 20 ? "ok" : "bad";
+}
+
 function buildHtml(stamp: string, sites: SiteSummary[]): string {
+  // The shared keyword list across all sites (same --rank applies to the whole
+  // run), preserving first-seen order, so each keyword gets one comparison column.
+  const keywords: string[] = [];
+  for (const s of sites) for (const r of s.rankings ?? []) if (!keywords.includes(r.keyword)) keywords.push(r.keyword);
+  const hasOffpage = sites.some((s) => s.domainRating != null || s.fieldLcpMs != null) || keywords.length > 0;
+  const shortKw = (kw: string) => (kw.length > 14 ? kw.slice(0, 13) + "…" : kw);
+
   // Rank columns we'd want a "best/worst" highlight for. Lower is better for axe/console/broken.
   const rows = sites
     .map(
@@ -76,6 +120,15 @@ function buildHtml(stamp: string, sites: SiteSummary[]): string {
         ${cell(site.axe?.violations ?? null, { bigIsBad: true })}
         ${cell(site.console, { bigIsBad: true })}
         ${cell(site.brokenLinks, { bigIsBad: true })}
+        ${hasOffpage ? cellRaw(site.domainRating != null ? site.domainRating.toFixed(1) : "—", drTier(site.domainRating)) : ""}
+        ${hasOffpage ? cellRaw(fmtLcp(site.fieldLcpMs), lcpTier(site.fieldLcpMs)) : ""}
+        ${keywords
+          .map((kw) => {
+            const r = site.rankings?.find((x) => x.keyword === kw);
+            const pos = r ? r.position : null;
+            return cellRaw(pos != null ? `#${pos}` : r ? "20+" : "—", rankTier(pos));
+          })
+          .join("")}
         <td class="cell cell-muted">${(site.durationMs / 1000).toFixed(1)}s</td>
       </tr>`,
     )
@@ -123,7 +176,7 @@ function buildHtml(stamp: string, sites: SiteSummary[]): string {
     <span><span class="dot dot-good"></span>strong</span>
     <span><span class="dot dot-ok"></span>middling</span>
     <span><span class="dot dot-bad"></span>weak</span>
-    <span>· lighthouse / security higher is better · axe / console / broken-links lower is better</span>
+    <span>· lighthouse / security / authority higher is better · axe / console / broken-links / field-LCP / rank lower is better</span>
   </div>
   <table>
     <thead>
@@ -138,6 +191,9 @@ function buildHtml(stamp: string, sites: SiteSummary[]): string {
         <th>Axe</th>
         <th>Console</th>
         <th>Broken</th>
+        ${hasOffpage ? `<th title="Domain authority (OpenPageRank, 0–10 — higher is better)">DR</th>` : ""}
+        ${hasOffpage ? `<th title="Field LCP p75 from CrUX — lower is better">Field LCP</th>` : ""}
+        ${keywords.map((kw) => `<th title="${escapeHtml(kw)} — SERP position, lower is better">↑ ${escapeHtml(shortKw(kw))}</th>`).join("")}
         <th>Time</th>
       </tr>
     </thead>
@@ -150,7 +206,7 @@ function buildHtml(stamp: string, sites: SiteSummary[]): string {
 
 export function writeCompareReport(outDir: string, runStamp: string, runs: { results: Results; dir: string }[]): void {
   const sites = runs.map((r) => summarise(r.results, r.dir));
-  const compareJson = { schemaVersion: 1, runStamp, sites };
+  const compareJson = { schemaVersion: 2, runStamp, sites };
   fs.writeFileSync(path.join(outDir, "compare.json"), JSON.stringify(compareJson, null, 2));
   fs.writeFileSync(path.join(outDir, "compare.html"), buildHtml(runStamp, sites));
 }

@@ -12,13 +12,17 @@ import type {
 } from "./util";
 import type { LighthouseDetail } from "./lighthouse";
 
+// v4: adds off-page / ranking signals to the `intel` block from free external
+// APIs — domain authority (OpenPageRank), real-world field Core Web Vitals
+// (Google CrUX), keyword SERP positions (Brave), and the owner's Search Console
+// performance. Each is null when its API key/credentials are absent.
 // v3: adds a site-level `site` intelligence block (passive recon — domain/WHOIS,
 // DNS, IP geo/ASN, TLS, email security, technology fingerprint rollup, and
 // known-vulnerability findings) plus a per-page `tech` fingerprint.
 // v2: per-page Lighthouse detail (millisecond metrics, opportunities, diagnostics,
 // failing audits), full axe node detail, console stacks, link anchor text/referrers,
 // and an `external` flag for off-origin (third-party) pages.
-export const RESULTS_SCHEMA_VERSION = 3;
+export const RESULTS_SCHEMA_VERSION = 4;
 
 export type PageResult = {
   url: string;
