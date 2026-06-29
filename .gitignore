@@ -7,6 +7,10 @@ screenshots.zip
 .env
 .env.local
 
+# auth/session credential files — never commit these
+notion-auth.json
+*-auth.json
+
 # local passive-recon/OSINT probe toolkit (not part of the package)
 recon/
 
