@@ -284,7 +284,7 @@ export type RunOptions = {
   // only, or both (full-page + a `<slug>@fold.png` viewport crop). See shoot().
   shotMode: "fullpage" | "viewport" | "both";
   // Skip the dark-colour-scheme pass for screenshots (light only).
-  noDark: boolean;
+  schemes: string[];
   // Also slice each full-page shot into sequential viewport-height images
   // (`<slug>@screen-N.png`) and mark the boundaries on the full-page shot.
   screens: boolean;

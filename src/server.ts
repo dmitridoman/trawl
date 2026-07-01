@@ -113,7 +113,7 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
   // Capture options.
   const shotMode = o.shotMode;
   if (typeof shotMode === "string" && ["viewport", "both"].includes(shotMode)) args.push("--shot", shotMode);
-  bool("noDark", "--no-dark");
+  multiFlag("schemes", "--scheme", ["light", "dark"]);
   bool("screens", "--screens");
   numFlag("maxScreens", "--max-screens");
 

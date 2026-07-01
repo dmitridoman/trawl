@@ -241,7 +241,10 @@ export const UI_HTML = /* html */ `<!doctype html>
         <option value="viewport">Above the fold only</option>
         <option value="both">Both — full page + above-the-fold crop</option>
       </select>
-      <label class="check" style="margin-top:11px"><input type="checkbox" id="noDark" /> Skip dark mode (light only)</label>
+      <label class="fl" style="margin-top:11px">Color schemes</label>
+      <div class="chips" id="captureSch">
+        <span class="chip" aria-pressed="true" data-v="light">light</span><span class="chip" aria-pressed="true" data-v="dark">dark</span>
+      </div>
       <label class="check"><input type="checkbox" id="screens" /> Slice into per-screen images <small>+ scroll markers</small></label>
       <div id="screensOpts" style="display:none; margin-left:24px">
         <label class="fl" style="margin-top:6px">Max screens per page</label>
@@ -413,7 +416,7 @@ function collect() {
     video: mode === "audit" && c("video"),
     videoViewports: chipVals("videoVps"), videoSchemes: chipVals("videoSch"),
     noLighthouse: c("noLighthouse"), noAxe: c("noAxe"), noLinks: c("noLinks"), noRecon: c("noRecon"), noCve: c("noCve"),
-    shotMode: $("shotMode").value, noDark: c("noDark"), screens: c("screens"), maxScreens: v("maxScreens") || null,
+    shotMode: $("shotMode").value, schemes: chipVals("captureSch"), screens: c("screens"), maxScreens: v("maxScreens") || null,
     rank: v("rank") || null, gscCredentials: v("gscCredentials") || null, noPagerank: c("noPagerank"), noCrux: c("noCrux"),
     authStorage: v("authStorage") || null, verifyIp: c("verifyIp"), homeIp: v("homeIp") || null
   };
@@ -431,7 +434,10 @@ function apply(o) {
   if (o.videoViewports) setChips("videoVps", o.videoViewports);
   if (o.videoSchemes) setChips("videoSch", o.videoSchemes);
   chk("noLighthouse", o.noLighthouse); chk("noAxe", o.noAxe); chk("noLinks", o.noLinks); chk("noRecon", o.noRecon); chk("noCve", o.noCve);
-  set("shotMode", o.shotMode || "fullpage"); chk("noDark", o.noDark); chk("screens", o.screens); set("maxScreens", o.maxScreens);
+  set("shotMode", o.shotMode || "fullpage"); 
+  if (o.schemes) setChips("captureSch", o.schemes); 
+  else if (o.noDark) setChips("captureSch", ["light"]); // backwards compat
+  chk("screens", o.screens); set("maxScreens", o.maxScreens);
   set("rank", o.rank); set("gscCredentials", o.gscCredentials); chk("noPagerank", o.noPagerank); chk("noCrux", o.noCrux);
   set("authStorage", o.authStorage); chk("verifyIp", o.verifyIp); set("homeIp", o.homeIp);
   $("videoOpts").style.display = $("video").checked ? "" : "none";
@@ -585,7 +591,8 @@ function loadRuns() {
       if (r.opts && r.opts.mirrorVideo && !(r.opts && r.opts.mirrorMedia)) badges.push("video");
       if (r.opts && r.opts.video) badges.push("video");
       if (r.opts && r.opts.screens) badges.push("screens");
-      if (r.opts && r.opts.noDark) badges.push("no dark");
+      if (r.opts && r.opts.schemes && !r.opts.schemes.includes("dark")) badges.push("no dark");
+      if (r.opts && r.opts.schemes && !r.opts.schemes.includes("light")) badges.push("no light");
       if (r.opts && r.opts.authStorage) badges.push("auth");
       if (r.hasMirror) badges.push("mirror saved");
       var canOpen = r.folder && !r.missing;
@@ -634,7 +641,7 @@ $("loginCancel").onclick = cancelLogin;
 $("refreshRuns").onclick = loadRuns;
 $("url").oninput = function () { validate(); persist(); };
 ["maxPages", "maxDepth", "include", "exclude", "concurrency", "authStorage", "homeIp", "maxScreens", "rank", "gscCredentials"].forEach(function (id) { $(id).oninput = persist; });
-["mirrorVideo", "mirrorCrossOrigin", "mirrorRewrite", "noLighthouse", "noAxe", "noLinks", "noRecon", "noCve", "verifyIp", "noDark", "noPagerank", "noCrux"].forEach(function (id) { $(id).onchange = persist; });
+["mirrorVideo", "mirrorCrossOrigin", "mirrorRewrite", "noLighthouse", "noAxe", "noLinks", "noRecon", "noCve", "verifyIp", "noPagerank", "noCrux"].forEach(function (id) { $(id).onchange = persist; });
 $("shotMode").onchange = persist;
 document.addEventListener("keydown", function (e) { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); if (!$("runBtn").disabled) run(); } });
 
