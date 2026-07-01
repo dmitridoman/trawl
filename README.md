@@ -269,17 +269,20 @@ runs and mirrors:
 trawl-ui            # serves http://127.0.0.1:4317 and opens it in your browser
 ```
 
-On macOS you can run it as a normal app. Build the icon + bundle and install it:
+On macOS you can run it as a normal app. One command installs it:
 
 ```bash
-node scripts/make-icon.mjs   # renders app/icon.icns (net icon) via Chromium
-# then build app/Trawl.app and copy it to /Applications
+npm run install-app
 ```
 
+This builds the icon and bundle if needed, then copies `Trawl.app` to
+`/Applications`. Drag it from there to your Dock to pin it.
+
 `Trawl.app` launches the control panel and opens it in your browser; if a server
-is already running it just brings the panel to the front. Drag it from
-`/Applications` to your Dock to pin it. The bundle is machine-specific (it points
-at your local checkout) so it is git-ignored, not committed.
+is already running it just brings the panel to the front. The bundle is
+machine-specific (it points at your local checkout) so it is git-ignored, not
+committed.
+
 
 ## Local development
 

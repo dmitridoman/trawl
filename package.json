@@ -22,7 +22,9 @@
     "prepare": "tsup",
     "prepublishOnly": "tsup",
     "postinstall": "playwright install chromium",
-    "update-datasets": "node scripts/update-datasets.mjs"
+    "update-datasets": "node scripts/update-datasets.mjs",
+    "make-app": "node scripts/make-app.mjs",
+    "install-app": "node scripts/make-app.mjs --install"
   },
   "keywords": [
     "screenshot",
