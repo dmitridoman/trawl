@@ -110,12 +110,32 @@ function buildArgs(o: RunOpts): { args: string[]; urls: string[] } | { error: st
   bool("verifyIp", "--verify-ip");
   strFlag("homeIp", "--home-ip");
 
+  // Capture options.
+  const shotMode = o.shotMode;
+  if (typeof shotMode === "string" && ["viewport", "both"].includes(shotMode)) args.push("--shot", shotMode);
+  bool("noDark", "--no-dark");
+  bool("screens", "--screens");
+  numFlag("maxScreens", "--max-screens");
+
+  // SEO / ranking (free external APIs).
+  strFlag("rank", "--rank");
+  bool("noPagerank", "--no-pagerank");
+  bool("noCrux", "--no-crux");
+
   // Only accept an auth-storage path that exists and is a readable file.
   const auth = o.authStorage;
   if (typeof auth === "string" && auth.trim()) {
     const p = path.resolve(auth.trim());
     if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return { error: `auth-storage file not found: ${auth}` };
     args.push("--auth-storage", p);
+  }
+
+  // Only accept a gsc-credentials path that exists and is a readable file.
+  const gsc = o.gscCredentials;
+  if (typeof gsc === "string" && gsc.trim()) {
+    const p = path.resolve(gsc.trim());
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return { error: `gsc-credentials file not found: ${gsc}` };
+    args.push("--gsc-credentials", p);
   }
 
   return { args, urls };

@@ -49,7 +49,7 @@ export const UI_HTML = /* html */ `<!doctype html>
 
   label.fl { display: block; margin: 11px 0 4px; font-size: 12px; color: var(--fg2); font-weight: 500; }
   label.fl:first-of-type { margin-top: 0; }
-  input[type=text], input[type=number], textarea {
+  input[type=text], input[type=number], textarea, select {
     width: 100%; background: var(--bg2); border: 1px solid var(--border); color: var(--fg);
     border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: var(--mono); transition: border-color .12s, box-shadow .12s; resize: vertical; }
   input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(68,147,248,.15); }
@@ -233,6 +233,32 @@ export const UI_HTML = /* html */ `<!doctype html>
       <label class="check"><input type="checkbox" id="noCve" /> Skip CVE correlation</label>
     </div>
 
+    <div class="card" id="captureCard">
+      <div class="h">Capture</div>
+      <label class="fl">Screenshot mode</label>
+      <select id="shotMode">
+        <option value="fullpage">Full page (tall scroll capture)</option>
+        <option value="viewport">Above the fold only</option>
+        <option value="both">Both — full page + above-the-fold crop</option>
+      </select>
+      <label class="check" style="margin-top:11px"><input type="checkbox" id="noDark" /> Skip dark mode (light only)</label>
+      <label class="check"><input type="checkbox" id="screens" /> Slice into per-screen images <small>+ scroll markers</small></label>
+      <div id="screensOpts" style="display:none; margin-left:24px">
+        <label class="fl" style="margin-top:6px">Max screens per page</label>
+        <input type="number" id="maxScreens" min="1" placeholder="20" />
+      </div>
+    </div>
+
+    <div class="card" id="seoCard">
+      <div class="h">SEO / ranking</div>
+      <label class="fl">Rank keywords <small style="color:var(--muted)">(comma-separated)</small></label>
+      <input type="text" id="rank" placeholder="e.g. luxury car hire london, chauffeur london" spellcheck="false" />
+      <label class="fl">Search Console credentials file</label>
+      <input type="text" id="gscCredentials" placeholder="(none)" spellcheck="false" />
+      <label class="check" style="margin-top:11px"><input type="checkbox" id="noPagerank" /> Skip domain authority (OpenPageRank)</label>
+      <label class="check"><input type="checkbox" id="noCrux" /> Skip field Core Web Vitals (CrUX)</label>
+    </div>
+
     <div class="card">
       <div class="h">Authentication</div>
       <label class="fl">storageState file</label>
@@ -387,6 +413,8 @@ function collect() {
     video: mode === "audit" && c("video"),
     videoViewports: chipVals("videoVps"), videoSchemes: chipVals("videoSch"),
     noLighthouse: c("noLighthouse"), noAxe: c("noAxe"), noLinks: c("noLinks"), noRecon: c("noRecon"), noCve: c("noCve"),
+    shotMode: $("shotMode").value, noDark: c("noDark"), screens: c("screens"), maxScreens: v("maxScreens") || null,
+    rank: v("rank") || null, gscCredentials: v("gscCredentials") || null, noPagerank: c("noPagerank"), noCrux: c("noCrux"),
     authStorage: v("authStorage") || null, verifyIp: c("verifyIp"), homeIp: v("homeIp") || null
   };
 }
@@ -403,8 +431,11 @@ function apply(o) {
   if (o.videoViewports) setChips("videoVps", o.videoViewports);
   if (o.videoSchemes) setChips("videoSch", o.videoSchemes);
   chk("noLighthouse", o.noLighthouse); chk("noAxe", o.noAxe); chk("noLinks", o.noLinks); chk("noRecon", o.noRecon); chk("noCve", o.noCve);
+  set("shotMode", o.shotMode || "fullpage"); chk("noDark", o.noDark); chk("screens", o.screens); set("maxScreens", o.maxScreens);
+  set("rank", o.rank); set("gscCredentials", o.gscCredentials); chk("noPagerank", o.noPagerank); chk("noCrux", o.noCrux);
   set("authStorage", o.authStorage); chk("verifyIp", o.verifyIp); set("homeIp", o.homeIp);
   $("videoOpts").style.display = $("video").checked ? "" : "none";
+  $("screensOpts").style.display = $("screens").checked ? "" : "none";
   persist();
 }
 function persist() { try { localStorage.setItem("trawl.form", JSON.stringify(collect())); } catch (e) {} }
@@ -417,6 +448,7 @@ function setMode(m) {
   $("auditOpts").style.display = m === "audit" ? "" : "none";
   $("mirrorOpts").style.display = m === "mirror" ? "" : "none";
   $("auditCard").classList.toggle("dim", m === "mirror");
+  $("captureCard").classList.toggle("dim", m === "mirror");
 }
 function setScope(s) {
   mirrorScope = s;
@@ -552,6 +584,8 @@ function loadRuns() {
       if (r.opts && r.opts.mirrorMedia) badges.push("media-only"); else if (r.opts && r.opts.mirror) badges.push("mirror"); else badges.push("audit");
       if (r.opts && r.opts.mirrorVideo && !(r.opts && r.opts.mirrorMedia)) badges.push("video");
       if (r.opts && r.opts.video) badges.push("video");
+      if (r.opts && r.opts.screens) badges.push("screens");
+      if (r.opts && r.opts.noDark) badges.push("no dark");
       if (r.opts && r.opts.authStorage) badges.push("auth");
       if (r.hasMirror) badges.push("mirror saved");
       var canOpen = r.folder && !r.missing;
@@ -588,6 +622,7 @@ $("modeMirror").onclick = function () { setMode("mirror"); persist(); };
 $("scopeAll").onclick = function () { setScope("all"); persist(); };
 $("scopeMedia").onclick = function () { setScope("media"); persist(); };
 $("video").onchange = function () { $("videoOpts").style.display = this.checked ? "" : "none"; persist(); };
+$("screens").onchange = function () { $("screensOpts").style.display = this.checked ? "" : "none"; persist(); };
 Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (c) {
   c.onclick = function () { c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true"); persist(); };
 });
@@ -598,8 +633,9 @@ $("loginSave").onclick = saveLogin;
 $("loginCancel").onclick = cancelLogin;
 $("refreshRuns").onclick = loadRuns;
 $("url").oninput = function () { validate(); persist(); };
-["maxPages", "maxDepth", "include", "exclude", "concurrency", "authStorage", "homeIp"].forEach(function (id) { $(id).oninput = persist; });
-["mirrorVideo", "mirrorCrossOrigin", "mirrorRewrite", "noLighthouse", "noAxe", "noLinks", "noRecon", "noCve", "verifyIp"].forEach(function (id) { $(id).onchange = persist; });
+["maxPages", "maxDepth", "include", "exclude", "concurrency", "authStorage", "homeIp", "maxScreens", "rank", "gscCredentials"].forEach(function (id) { $(id).oninput = persist; });
+["mirrorVideo", "mirrorCrossOrigin", "mirrorRewrite", "noLighthouse", "noAxe", "noLinks", "noRecon", "noCve", "verifyIp", "noDark", "noPagerank", "noCrux"].forEach(function (id) { $(id).onchange = persist; });
+$("shotMode").onchange = persist;
 document.addEventListener("keydown", function (e) { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); if (!$("runBtn").disabled) run(); } });
 
 restore();

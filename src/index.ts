@@ -187,6 +187,11 @@ Capture:
   --shot <mode>          screenshot mode: fullpage (default, tall scroll capture),
                          viewport (above-the-fold crop only), or both (full-page
                          plus an above-the-fold <slug>@fold.png)
+  --no-dark              skip the dark-colour-scheme screenshot pass (light only)
+  --screens              also slice full-page shots into sequential viewport-height
+                         images (<slug>@screen-N.png) and mark the boundaries on the
+                         full-page shot; implies full-page capture even with --shot viewport
+  --max-screens <N>      cap on slices per page/viewport with --screens (default 20)
 
 SEO / ranking flags (free external APIs — see README for the env keys):
   --rank "kw1, kw2"      check this domain's SERP position for each keyword
@@ -261,6 +266,9 @@ function parseCli(): ParsedCli {
         "auth-storage":   { type: "string" },
         "concurrency":    { type: "string" },
         "shot":           { type: "string" },
+        "no-dark":        { type: "boolean" },
+        "screens":        { type: "boolean" },
+        "max-screens":    { type: "string" },
         "video":          { type: "boolean" },
         "video-pages":    { type: "string" },
         "video-viewport": { type: "string", multiple: true },
@@ -421,6 +429,9 @@ function parseCli(): ParsedCli {
     exclude:      re(values["exclude"], "exclude"),
     concurrency:  num(values["concurrency"], "concurrency") ?? DEFAULT_CONCURRENCY,
     shotMode,
+    noDark:       Boolean(values["no-dark"]),
+    screens:      Boolean(values["screens"]),
+    maxScreens:   num(values["max-screens"], "max-screens") ?? 20,
     authStorage:  authStorage(values["auth-storage"]),
     video:        videoEnabled,
     videoPages:   re(values["video-pages"], "video-pages"),
@@ -831,15 +842,20 @@ async function shoot(
   pages: PageRecord[],
   outDir: string,
   runAxeScan: boolean,
-  options: Pick<RunOptions, "authStorage" | "concurrency" | "shotMode">,
-): Promise<Map<string, AxeSummary>> {
+  options: Pick<RunOptions, "authStorage" | "concurrency" | "shotMode" | "noDark" | "screens" | "maxScreens">,
+): Promise<{ axeResults: Map<string, AxeSummary>; screenCounts: Map<string, Record<string, number>> }> {
   const browser: Browser = await chromium.launch({
     args: ["--ignore-certificate-errors"],
   });
   const axeResults = new Map<string, AxeSummary>();
+  const screenCounts = new Map<string, Record<string, number>>();
   const axeLock = new Set<string>(); // prevents concurrent axe runs on the same slug
 
-  for (const scheme of COLOR_SCHEMES) {
+  const schemes = options.noDark
+    ? COLOR_SCHEMES.filter((s) => s !== "dark")
+    : COLOR_SCHEMES;
+
+  for (const scheme of schemes) {
     for (const vp of VIEWPORTS) {
       fs.mkdirSync(path.join(outDir, scheme, vp.name), { recursive: true });
     }
@@ -848,7 +864,7 @@ async function shoot(
   // Pre-flatten the full job grid so workers can pull independently.
   const jobs: ShootJob[] = [];
   for (const rec of pages) {
-    for (const scheme of COLOR_SCHEMES) {
+    for (const scheme of schemes) {
       for (const vp of VIEWPORTS) {
         jobs.push({ rec, scheme, vp });
       }
@@ -914,8 +930,46 @@ async function shoot(
         // shotMode: "fullpage" (default) → tall scroll capture as <slug>.png;
         // "viewport" → above-the-fold crop, also as <slug>.png (keeps report.ts
         // happy); "both" → full-page <slug>.png + an above-the-fold <slug>@fold.png.
+        // --screens always forces the full-page capture too, since the per-screen
+        // slices and boundary markers below are cut from it.
         const wantFold = options.shotMode !== "fullpage";
-        const wantFull = options.shotMode !== "viewport";
+        const wantFull = options.shotMode !== "viewport" || options.screens;
+
+        // When --screens is set, bake dashed boundary markers into the full-page
+        // shot (so the scroll "rhythm" is visible on the long image too), then
+        // strip them back out before cutting the clean per-screen slices.
+        let screenCount = 0;
+        let totalHeight = 0;
+        if (options.screens) {
+          totalHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+          screenCount = Math.max(1, Math.min(Math.ceil(totalHeight / vp.height), options.maxScreens));
+          if (screenCount > 1) {
+            await page
+              .evaluate(
+                ({ stepHeight, count }: { stepHeight: number; count: number }) => {
+                  for (let n = 1; n < count; n++) {
+                    const line = document.createElement("div");
+                    line.className = "__trawl_fold_marker";
+                    line.style.cssText =
+                      `position:absolute;left:0;top:${n * stepHeight}px;width:100%;` +
+                      `border-top:3px dashed #ff2d78;z-index:2147483647;pointer-events:none;`;
+                    const label = document.createElement("span");
+                    label.className = "__trawl_fold_marker";
+                    label.textContent = `screen ${n} / ${n + 1}`;
+                    label.style.cssText =
+                      `position:absolute;left:8px;top:${n * stepHeight + 4}px;background:#ff2d78;` +
+                      `color:#fff;font:11px/1.4 monospace;padding:2px 6px;border-radius:3px;` +
+                      `z-index:2147483647;pointer-events:none;`;
+                    document.body.appendChild(line);
+                    document.body.appendChild(label);
+                  }
+                },
+                { stepHeight: vp.height, count: screenCount },
+              )
+              .catch(() => {});
+          }
+        }
+
         if (wantFull) {
           await page.screenshot({
             path: path.join(outDir, scheme, vp.name, `${rec.slug}.png`),
@@ -929,7 +983,32 @@ async function shoot(
             fullPage: false,
           });
         }
-        console.log(`  ✓ ${rec.slug} @ ${scheme}/${vp.name} (${vp.width}px, ${options.shotMode})`);
+
+        if (options.screens) {
+          if (screenCount > 1) {
+            await page
+              .evaluate(() => document.querySelectorAll(".__trawl_fold_marker").forEach((el) => el.remove()))
+              .catch(() => {});
+          }
+          for (let n = 0; n < screenCount; n++) {
+            const y = n * vp.height;
+            const sliceHeight = Math.min(vp.height, totalHeight - y);
+            if (sliceHeight <= 0) break;
+            // clip on a non-fullPage screenshot is relative to the current viewport,
+            // not the whole document — scroll to this slice's offset first.
+            await page.evaluate((scrollY: number) => window.scrollTo(0, scrollY), y);
+            await page.waitForTimeout(50);
+            await page.screenshot({
+              path: path.join(outDir, scheme, vp.name, `${rec.slug}@screen-${n + 1}.png`),
+              clip: { x: 0, y: 0, width: vp.width, height: sliceHeight },
+            });
+          }
+          const perPage = screenCounts.get(rec.slug) ?? {};
+          perPage[`${scheme}/${vp.name}`] = screenCount;
+          screenCounts.set(rec.slug, perPage);
+        }
+
+        console.log(`  ✓ ${rec.slug} @ ${scheme}/${vp.name} (${vp.width}px, ${options.shotMode}${options.screens ? `, ${screenCount} screens` : ""})`);
       } catch {
         console.warn(`  ✗ ${rec.slug} @ ${scheme}/${vp.name} — failed`);
       } finally {
@@ -941,7 +1020,7 @@ async function shoot(
   const workers = Array.from({ length: Math.max(1, Math.min(options.concurrency, jobs.length)) }, () => worker());
   await Promise.all(workers);
   await browser.close();
-  return axeResults;
+  return { axeResults, screenCounts };
 }
 
 function zipDir(srcDir: string, zipPath: string): Promise<void> {
@@ -992,8 +1071,8 @@ async function runSite(
         return [];
       });
 
-  const axeResults = options.mirror
-    ? new Map<string, AxeSummary>()
+  const { axeResults, screenCounts } = options.mirror
+    ? { axeResults: new Map<string, AxeSummary>(), screenCounts: new Map<string, Record<string, number>>() }
     : await shoot(crawled.pages, outDir, !options.noAxe, options);
 
   let lighthouse: Map<string, LighthouseDetail> | null = null;
@@ -1069,6 +1148,7 @@ async function runSite(
     lighthouse,
     baseOrigin: crawled.baseOrigin,
     axe: axeResults,
+    screenCounts: options.screens ? screenCounts : null,
     seo: crawled.seo,
     security: crawled.security,
     tech: crawled.tech,
@@ -1089,8 +1169,9 @@ async function runSite(
   const lhSummary = lighthouse ? `, Lighthouse on ${lighthouse.size}` : ", Lighthouse skipped";
   const axeSummary = !options.noAxe ? `, axe on ${axeResults.size}` : ", axe skipped";
   const linksSummary = links.length > 0 ? `, ${links.length} links (${links.filter((l) => !l.ok).length} broken)` : "";
+  const modeCount = options.noDark ? 1 : COLOR_SCHEMES.length;
   console.log(
-    `\nDone (${siteLabel}). ${crawled.pages.length} pages × ${VIEWPORTS.length} viewports × ${COLOR_SCHEMES.length} modes${lhSummary}${axeSummary}${linksSummary}`,
+    `\nDone (${siteLabel}). ${crawled.pages.length} pages × ${VIEWPORTS.length} viewports × ${modeCount} modes${lhSummary}${axeSummary}${linksSummary}`,
   );
 
   return { results, outDir, zipPath };

@@ -12,6 +12,9 @@ import type {
 } from "./util";
 import type { LighthouseDetail } from "./lighthouse";
 
+// v5: adds an optional per-page `screenCounts` map (keyed by `${scheme}/${viewport}`)
+// recording how many sequential viewport-height `<slug>@screen-N.png` slices were
+// cut from the full-page shot; only populated when --screens is passed.
 // v4: adds off-page / ranking signals to the `intel` block from free external
 // APIs — domain authority (OpenPageRank), real-world field Core Web Vitals
 // (Google CrUX), keyword SERP positions (Brave), and the owner's Search Console
@@ -22,7 +25,7 @@ import type { LighthouseDetail } from "./lighthouse";
 // v2: per-page Lighthouse detail (millisecond metrics, opportunities, diagnostics,
 // failing audits), full axe node detail, console stacks, link anchor text/referrers,
 // and an `external` flag for off-origin (third-party) pages.
-export const RESULTS_SCHEMA_VERSION = 4;
+export const RESULTS_SCHEMA_VERSION = 5;
 
 export type PageResult = {
   url: string;
@@ -36,6 +39,7 @@ export type PageResult = {
   security: SecurityHeaders | null;
   tech: TechResult | null;
   console: ConsoleEvent[];
+  screenCounts: Record<string, number> | null; // `${scheme}/${viewport}` -> slice count, from --screens
 };
 
 export type ResultsSummary = {
@@ -70,6 +74,7 @@ export type ResultsInputs = {
   lighthouse: Map<string, LighthouseDetail> | null;
   baseOrigin: string;
   axe: Map<string, AxeSummary>;
+  screenCounts: Map<string, Record<string, number>> | null;
   seo: Map<string, SeoMeta>;
   security: Map<string, SecurityHeaders>;
   tech: Map<string, TechResult>;
@@ -104,6 +109,7 @@ export function buildResults(inputs: ResultsInputs): Results {
     security: inputs.security.get(p.slug) ?? null,
     tech: inputs.tech.get(p.slug) ?? null,
     console: inputs.consoleEvents.get(p.slug) ?? [],
+    screenCounts: inputs.screenCounts?.get(p.slug) ?? null,
   }));
 
   const consoleErrors = pageResults.reduce((s, p) => s + p.console.filter((c) => c.type === "error").length, 0);

@@ -522,10 +522,29 @@ function pageCard(rec: PageResult): string {
     VIEWPORTS.map((vp) => {
       const rel = `${scheme}/${vp.name}/${encodeURIComponent(rec.slug)}.png`;
       const cap = `${scheme} · ${vp.name} · ${vp.width}×${vp.height}`;
-      return `<a class="thumb" href="${rel}" target="_blank" rel="noopener">
+      const thumb = `<a class="thumb" href="${rel}" target="_blank" rel="noopener">
         <img src="${rel}" alt="${escapeHtml(cap)}" loading="lazy" />
         <span class="thumb-cap">${escapeHtml(cap)}</span>
       </a>`;
+
+      const screenCount = rec.screenCounts?.[`${scheme}/${vp.name}`] ?? 0;
+      if (screenCount <= 1) return thumb;
+
+      const screens = Array.from({ length: screenCount }, (_, i) => {
+        const n = i + 1;
+        const screenRel = `${scheme}/${vp.name}/${encodeURIComponent(rec.slug)}@screen-${n}.png`;
+        const screenCap = `${cap} · screen ${n}/${screenCount}`;
+        return `<a class="thumb thumb-screen" href="${screenRel}" target="_blank" rel="noopener">
+          <img src="${screenRel}" alt="${escapeHtml(screenCap)}" loading="lazy" />
+          <span class="thumb-cap">screen ${n}/${screenCount}</span>
+        </a>`;
+      }).join("\n");
+
+      return `${thumb}
+      <details class="details thumb-screens">
+        <summary>Screens (${screenCount})</summary>
+        <div class="grid thumb-filmstrip">${screens}</div>
+      </details>`;
     }),
   ).join("\n");
 
@@ -767,6 +786,10 @@ const CSS = `
   .thumb img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; object-position: top center; background: #0e0f12; border: 1px solid #23262d; border-radius: 6px; }
   .thumb-cap { font-size: 11px; color: #9ba2ad; text-align: center; font-variant-numeric: tabular-nums; }
   .thumb:hover img { border-color: #3b4250; }
+  .thumb-screens { grid-column: 1 / -1; margin-top: -4px; }
+  .thumb-screens summary { cursor: pointer; font-size: 12px; color: #9ba2ad; }
+  .thumb-filmstrip { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top: 10px; }
+  .thumb-screen img { aspect-ratio: auto; object-fit: contain; }
   .more { color: #6b7280; font-size: 11px; margin: 6px 0 0; }
   .details h4 { font-size: 12px; font-weight: 600; color: #c5cad3; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
   .chip-ext { color: #c084fc; border-color: rgba(192, 132, 252, 0.35); background: rgba(192, 132, 252, 0.10); }
