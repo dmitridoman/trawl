@@ -414,15 +414,23 @@ function offpageSection(intel: SiteIntel): string {
 
   const rankTier = (r: { position: number | null; found: boolean }) =>
     !r.found || r.position == null ? "bad" : r.position <= 10 ? "good" : r.position <= 20 ? "ok" : "bad";
+  const hasVolume = !!rankings?.some((r) => r.volume != null);
   const rankBlock = rankings && rankings.length > 0
     ? `<div class="intel-block">
-        <h3>Search rankings <span class="intel-sub">Brave Search · external proxy for Google</span></h3>
-        <div class="intel-grid">
-          ${rankings
-            .map((r) => `<div class="intel-cell"><span class="intel-key">${escapeHtml(r.keyword)}</span><span class="intel-val intel-cwv-${rankTier(r)}">${r.found && r.position != null ? `#${r.position}` : "not in top 20"}</span></div>`)
-            .join("")}
-        </div>
-        <p class="intel-note">Where this domain sits in Brave's organic results for each keyword. Brave is an independent index, so read it as directional rather than exact Google position.</p>
+        <h3>Search rankings <span class="intel-sub">Brave Search position${hasVolume ? " · Keywords Everywhere demand" : ""}</span></h3>
+        ${hasVolume
+          ? `<table class="links-table intel-sc-table"><thead><tr><th>Keyword</th><th>Position</th><th>Volume/mo</th><th>CPC</th><th>Competition</th></tr></thead><tbody>${rankings
+              .map(
+                (r) =>
+                  `<tr><td>${escapeHtml(r.keyword)}</td><td class="intel-cwv-${rankTier(r)}">${r.found && r.position != null ? `#${r.position}` : "not in top 20"}</td><td>${r.volume != null ? r.volume.toLocaleString() : "—"}</td><td>${r.cpc != null ? `$${r.cpc.toFixed(2)}` : "—"}</td><td>${r.competition != null ? `${Math.round(r.competition * 100)}%` : "—"}</td></tr>`,
+              )
+              .join("")}</tbody></table>`
+          : `<div class="intel-grid">
+              ${rankings
+                .map((r) => `<div class="intel-cell"><span class="intel-key">${escapeHtml(r.keyword)}</span><span class="intel-val intel-cwv-${rankTier(r)}">${r.found && r.position != null ? `#${r.position}` : "not in top 20"}</span></div>`)
+                .join("")}
+            </div>`}
+        <p class="intel-note">Where this domain sits in Brave's organic results for each keyword${hasVolume ? ", alongside average monthly search volume, CPC and ad competition from Keywords Everywhere" : ""}. Brave is an independent index, so read position as directional rather than exact Google position.</p>
       </div>`
     : "";
 

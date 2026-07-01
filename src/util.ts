@@ -236,6 +236,12 @@ export type RankingResult = {
   keyword: string;
   position: number | null; // 1-based position in the SERP, null = outside the checked window
   found: boolean;
+  // Search demand, from Keywords Everywhere — independent of SERP position,
+  // so still populated even when `found` is false. Null when the key is
+  // absent or the API has no data for that keyword.
+  volume: number | null; // average monthly searches
+  cpc: number | null; // average cost-per-click (USD)
+  competition: number | null; // 0..1, ads competition
 };
 
 export type GscQuery = { query: string; clicks: number; impressions: number; position: number };

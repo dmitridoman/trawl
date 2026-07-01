@@ -51,6 +51,10 @@ type LoginSession = { browser: Browser; context: BrowserContext; host: string };
 const runs = new Map<string, RunState>();
 const logins = new Map<string, LoginSession>();
 
+// Capture the server's build timestamp at startup — this reflects when the
+// server bundle was built, not the current file mtime on disk.
+const buildTimestamp = Math.floor(fs.statSync(__filename).mtimeMs);
+
 const id = () => crypto.randomBytes(6).toString("hex");
 
 // ---- Flag builder ---------------------------------------------------------
@@ -433,6 +437,10 @@ const server = http.createServer(async (req, res) => {
   const method = req.method || "GET";
 
   try {
+    if (url.pathname === "/version" && method === "GET") {
+      return json(res, { timestamp: buildTimestamp });
+    }
+
     if (url.pathname === "/" && method === "GET") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       return res.end(UI_HTML);

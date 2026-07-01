@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "trawl-ui",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["TRAWL_PORT=4318", "node", "dist/server.js"],
+      "port": 4318
+    }
+  ]
+}

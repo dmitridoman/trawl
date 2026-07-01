@@ -195,7 +195,9 @@ Capture:
 
 SEO / ranking flags (free external APIs — see README for the env keys):
   --rank "kw1, kw2"      check this domain's SERP position for each keyword
-                         (Brave Search; needs CRAWLSHOT_BRAVE_KEY)
+                         (Brave Search; needs CRAWLSHOT_BRAVE_KEY) plus search
+                         volume/CPC/competition (Keywords Everywhere; needs
+                         CRAWLSHOT_KEYWORDS_EVERYWHERE_KEY) — either key alone works
   --gsc-credentials <p>  pull owner Search Console stats from a credentials JSON
                          (access_token or a service-account key)
   --no-pagerank          skip the OpenPageRank domain-authority lookup

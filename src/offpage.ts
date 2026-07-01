@@ -119,9 +119,9 @@ async function fetchFieldCwv(origin: string): Promise<FieldCwvInfo> {
 // --- Brave Search: external keyword ranking position -----------------------
 
 const BRAVE_THROTTLE_MS = 1100; // free tier is ~1 request / second
-const BRAVE_MAX_KEYWORDS = 10;
+const RANK_MAX_KEYWORDS = 10;
 
-async function rankFor(domain: string, keyword: string, key: string): Promise<RankingResult> {
+async function braveRankFor(domain: string, keyword: string, key: string): Promise<{ position: number | null; found: boolean }> {
   const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(keyword)}&count=20`;
   const data = await fetchJson(url, { headers: { "X-Subscription-Token": key } });
   const results: any[] = Array.isArray(data?.web?.results) ? data.web.results : [];
@@ -133,24 +133,69 @@ async function rankFor(domain: string, keyword: string, key: string): Promise<Ra
       break;
     }
   }
-  return { keyword, position, found: position !== null };
+  return { position, found: position !== null };
+}
+
+// --- Keywords Everywhere: search volume / CPC / competition ----------------
+// Independent of SERP position, so it's merged into the same rows rather than
+// gated behind a Brave key — useful even when you only have this one key.
+
+type KeywordDemand = { volume: number | null; cpc: number | null; competition: number | null };
+const NO_DEMAND: KeywordDemand = { volume: null, cpc: null, competition: null };
+
+async function fetchKeywordVolumes(keywords: string[], key: string): Promise<Map<string, KeywordDemand>> {
+  const out = new Map<string, KeywordDemand>();
+  const body = new URLSearchParams();
+  body.set("dataSource", "gkp");
+  body.set("country", "us");
+  body.set("currency", "USD");
+  for (const kw of keywords) body.append("kw[]", kw);
+  const data = await fetchJson("https://api.keywordseverywhere.com/v1/get_keyword_data", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  const rows: any[] = Array.isArray(data?.data) ? data.data : [];
+  for (const row of rows) {
+    const kw = typeof row?.keyword === "string" ? row.keyword : null;
+    if (!kw) continue;
+    const vol = typeof row.vol === "number" ? row.vol : null;
+    const cpcRaw = row.cpc?.value;
+    const cpc = cpcRaw != null && Number.isFinite(Number(cpcRaw)) ? Number(cpcRaw) : null;
+    const competition = typeof row.competition === "number" ? row.competition : null;
+    out.set(kw, { volume: vol, cpc, competition });
+  }
+  return out;
 }
 
 async function fetchRankings(domain: string, keywords: string[]): Promise<RankingResult[] | null> {
-  const key = process.env.CRAWLSHOT_BRAVE_KEY;
-  if (!key) {
-    console.log("  (rankings: set CRAWLSHOT_BRAVE_KEY to add keyword positions from Brave Search — free tier at brave.com/search/api)");
+  const braveKey = process.env.CRAWLSHOT_BRAVE_KEY;
+  const kwKey = process.env.CRAWLSHOT_KEYWORDS_EVERYWHERE_KEY;
+  if (!braveKey && !kwKey) {
+    console.log(
+      "  (rankings: set CRAWLSHOT_BRAVE_KEY for SERP position — free tier at brave.com/search/api — and/or CRAWLSHOT_KEYWORDS_EVERYWHERE_KEY for search volume)",
+    );
     return null;
   }
-  const list = keywords.slice(0, BRAVE_MAX_KEYWORDS);
-  const skipped = keywords.length - list.length;
-  if (skipped > 0) console.log(`  (rankings: capped at ${BRAVE_MAX_KEYWORDS} keyword(s), skipped ${skipped})`);
-  if (list.length > 0) console.log(`  checking ${list.length} keyword ranking(s) via Brave (throttled ~1/s)...`);
 
+  const list = keywords.slice(0, RANK_MAX_KEYWORDS);
+  const skipped = keywords.length - list.length;
+  if (skipped > 0) console.log(`  (rankings: capped at ${RANK_MAX_KEYWORDS} keyword(s), skipped ${skipped})`);
+
+  const volumes = kwKey ? await fetchKeywordVolumes(list, kwKey).catch(() => new Map<string, KeywordDemand>()) : new Map<string, KeywordDemand>();
+  if (kwKey && list.length > 0 && volumes.size === 0) console.log("  (search volume: Keywords Everywhere returned no data — check credits/key)");
+
+  if (!braveKey) {
+    console.log("  (rankings: set CRAWLSHOT_BRAVE_KEY to add SERP position from Brave Search — free tier at brave.com/search/api)");
+    return list.map((keyword) => ({ keyword, position: null, found: false, ...(volumes.get(keyword) ?? NO_DEMAND) }));
+  }
+
+  if (list.length > 0) console.log(`  checking ${list.length} keyword ranking(s) via Brave (throttled ~1/s)...`);
   const out: RankingResult[] = [];
   for (let i = 0; i < list.length; i++) {
     if (i > 0) await delay(BRAVE_THROTTLE_MS);
-    out.push(await rankFor(domain, list[i]!, key));
+    const rank = await braveRankFor(domain, list[i]!, braveKey);
+    out.push({ keyword: list[i]!, ...rank, ...(volumes.get(list[i]!) ?? NO_DEMAND) });
   }
   return out;
 }
