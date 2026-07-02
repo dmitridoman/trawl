@@ -12,6 +12,9 @@ import type {
 } from "./util";
 import type { LighthouseDetail } from "./lighthouse";
 
+// v6: adds a top-level `schemes` array recording which color scheme(s) were
+// actually captured (e.g. ["light"] or ["light","dark"], [] for mirror runs),
+// so the report only links thumbnails for schemes that were actually shot.
 // v5: adds an optional per-page `screenCounts` map (keyed by `${scheme}/${viewport}`)
 // recording how many sequential viewport-height `<slug>@screen-N.png` slices were
 // cut from the full-page shot; only populated when --screens is passed.
@@ -25,7 +28,7 @@ import type { LighthouseDetail } from "./lighthouse";
 // v2: per-page Lighthouse detail (millisecond metrics, opportunities, diagnostics,
 // failing audits), full axe node detail, console stacks, link anchor text/referrers,
 // and an `external` flag for off-origin (third-party) pages.
-export const RESULTS_SCHEMA_VERSION = 5;
+export const RESULTS_SCHEMA_VERSION = 6;
 
 export type PageResult = {
   url: string;
@@ -61,6 +64,7 @@ export type Results = {
   pages: PageResult[];
   links: LinkCheck[];
   summary: ResultsSummary;
+  schemes: string[]; // color scheme(s) actually captured, e.g. ["light"] or ["light","dark"]
 };
 
 export type ResultsInputs = {
@@ -81,6 +85,7 @@ export type ResultsInputs = {
   consoleEvents: Map<string, ConsoleEvent[]>;
   links: LinkCheck[];
   site: SiteIntel | null;
+  schemes: string[];
 };
 
 function avg(nums: number[]): number {
@@ -160,6 +165,7 @@ export function buildResults(inputs: ResultsInputs): Results {
     pages: pageResults,
     links: inputs.links,
     summary,
+    schemes: inputs.schemes,
   };
 }
 

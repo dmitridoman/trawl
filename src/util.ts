@@ -285,7 +285,8 @@ export type RunOptions = {
   maxDepth: number | null;
   include: RegExp | null;
   exclude: RegExp | null;
-  concurrency: number;
+  concurrency: number; // pages in flight per site
+  siteConcurrency: number; // sites in flight at once, in multi-site compare mode
   // Screenshot capture mode: full-page scroll (default), above-the-fold viewport
   // only, or both (full-page + a `<slug>@fold.png` viewport crop). See shoot().
   shotMode: "fullpage" | "viewport" | "both";
@@ -327,3 +328,4 @@ export type ExitIp = {
 };
 
 export const DEFAULT_CONCURRENCY = 4;
+export const DEFAULT_SITE_CONCURRENCY = 3;

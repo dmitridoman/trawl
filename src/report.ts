@@ -496,9 +496,9 @@ function vulnPanel(intel: SiteIntel | null): string {
   </section>`;
 }
 
-function pageCard(rec: PageResult): string {
+function pageCard(rec: PageResult, schemes: readonly string[]): string {
   const title = rec.title.trim() || rec.slug;
-  const lhHref = `lighthouse/${encodeURIComponent(rec.slug)}.html`;
+  const lhHref = rec.lighthouse?.reportUrl ?? `lighthouse/${encodeURIComponent(rec.slug)}.html`;
   const axeHref = `a11y/${encodeURIComponent(rec.slug)}.json`;
 
   const chips: string[] = [];
@@ -520,13 +520,14 @@ function pageCard(rec: PageResult): string {
   if (rec.lighthouse) {
     const lh = rec.lighthouse;
     const lcp = metricValueById(lh, "largest-contentful-paint");
+    const srcLabel = lh.source === "psi" ? "PageSpeed Insights" : "local Lighthouse";
     perfSection = `<details class="details"><summary>Performance detail${lcp ? ` — LCP ${escapeHtml(lcp)}` : ""}</summary>
         ${performanceSection(lh)}
-        <p class="more"><a href="${lhHref}">full Lighthouse report ↗</a></p>
+        <p class="more"><a href="${lhHref}" target="_blank" rel="noopener">full report (${escapeHtml(srcLabel)}) ↗</a></p>
       </details>`;
   }
 
-  const thumbs = COLOR_SCHEMES.flatMap((scheme) =>
+  const thumbs = schemes.flatMap((scheme) =>
     VIEWPORTS.map((vp) => {
       const rel = `${scheme}/${vp.name}/${encodeURIComponent(rec.slug)}.png`;
       const cap = `${scheme} · ${vp.name} · ${vp.width}×${vp.height}`;
@@ -889,8 +890,9 @@ const CSS = `
 `;
 
 export function writeIndexReport(outDir: string, results: Results): void {
-  const captures = results.pages.length * COLOR_SCHEMES.length * VIEWPORTS.length;
-  const cards = results.pages.map(pageCard).join("\n");
+  const schemes = results.schemes;
+  const captures = results.pages.length * schemes.length * VIEWPORTS.length;
+  const cards = results.pages.map((rec) => pageCard(rec, schemes)).join("\n");
 
   const html = `<!doctype html>
 <html lang="en">

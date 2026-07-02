@@ -68,6 +68,11 @@ export type LighthouseDetail = {
   opportunities: LighthouseOpportunity[];
   diagnostics: LighthouseDiagnostics;
   failingAudits: LighthouseAudit[];
+  // Where the "full report" link should point: a relative path to a saved
+  // HTML report (local Lighthouse) or an external pagespeed.web.dev URL (PSI —
+  // it's an API, not a report renderer, so there's no local HTML to save).
+  reportUrl: string;
+  source: "local" | "psi";
 };
 
 // --- Minimal local shape of the Lighthouse result (lhr) ----------------------
@@ -183,7 +188,7 @@ function buildDiagnostics(audits: Record<string, RawAudit | undefined>): Lightho
   };
 }
 
-export function buildLighthouseDetail(lhr: RawLhr, scores: Scores): LighthouseDetail {
+export function buildLighthouseDetail(lhr: RawLhr, scores: Scores, reportUrl: string, source: "local" | "psi"): LighthouseDetail {
   const audits = lhr.audits ?? {};
   const metricIds = new Set(METRIC_IDS);
 
@@ -244,7 +249,7 @@ export function buildLighthouseDetail(lhr: RawLhr, scores: Scores): LighthouseDe
   }
   failingAudits.sort((x, y) => (x.score ?? 1) - (y.score ?? 1));
 
-  return { scores, metrics, opportunities, diagnostics: buildDiagnostics(audits), failingAudits };
+  return { scores, metrics, opportunities, diagnostics: buildDiagnostics(audits), failingAudits, reportUrl, source };
 }
 
 // Jittered delay between Lighthouse audits. Lighthouse fires many requests per
@@ -276,19 +281,52 @@ function categoryScores(lhr: RawLhr): Scores | null {
   return { performance, accessibility, bestPractices, seo };
 }
 
+// --- PageSpeed Insights: hosted Lighthouse, no local Chrome needed ----------
+// PSI runs the exact same Lighthouse engine server-side and returns the same
+// `lhr` JSON shape, so buildLighthouseDetail()/categoryScores() work unchanged.
+// It can only reach publicly-resolvable URLs and can't carry a --auth-storage
+// session, so it's only attempted when neither applies (see runLighthouse).
+
+function psiReportUrl(url: string): string {
+  return `https://pagespeed.web.dev/analysis?url=${encodeURIComponent(url)}&form_factor=mobile`;
+}
+
+async function fetchPsiLighthouseDetail(url: string, key: string): Promise<LighthouseDetail | null> {
+  const params = new URLSearchParams({ url, key, strategy: "mobile" });
+  for (const cat of ["PERFORMANCE", "ACCESSIBILITY", "BEST_PRACTICES", "SEO"]) params.append("category", cat);
+
+  const res = await fetch(`https://www.googleapis.com/pagespeedonline/v5/runPagespeed?${params}`);
+  if (!res.ok) throw new Error(`PSI ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  const data: any = await res.json();
+  const lhr = data?.lighthouseResult as RawLhr | undefined;
+  if (!lhr) throw new Error("PSI response missing lighthouseResult");
+
+  const s = categoryScores(lhr);
+  if (!s) throw new Error("missing Lighthouse category scores in PSI response");
+
+  return buildLighthouseDetail(lhr, s, psiReportUrl(url), "psi");
+}
+
 export async function runLighthouse(
   pages: PageRecord[],
   port: number,
   outDir: string,
   options: Pick<RunOptions, "authStorage">,
 ): Promise<Map<string, LighthouseDetail>> {
-  // Lighthouse v11+ is ESM-only; we're built to CJS via tsup. Dynamic import
-  // keeps the build config untouched and resolves the ESM at runtime under Node 20+.
-  const { default: lighthouse } = await import("lighthouse");
-
   const details = new Map<string, LighthouseDetail>();
   const lhDir = path.join(outDir, "lighthouse");
-  fs.mkdirSync(lhDir, { recursive: true });
+
+  // Prefer PageSpeed Insights — no local Chrome, no risk of this machine's own
+  // load skewing scores. Unusable for authenticated crawls (PSI has no session)
+  // or URLs Google can't publicly resolve (localhost/staging), so those always
+  // go to local Lighthouse; a per-page PSI failure also falls back to local.
+  const psiKey = process.env.CRAWLSHOT_PSI_KEY;
+  const psiEligible = !!psiKey && !options.authStorage;
+
+  // Lighthouse v11+ is ESM-only; we're built to CJS via tsup. Dynamic import
+  // keeps the build config untouched and resolves the ESM at runtime under
+  // Node 20+. Only loaded if local Lighthouse actually runs for some page.
+  let lighthouseFn: typeof import("lighthouse").default | null = null;
 
   const launchBrowser = async (): Promise<{ newPage: () => Promise<Page>; close: () => Promise<void> }> => {
     if (options.authStorage) {
@@ -335,17 +373,18 @@ export async function runLighthouse(
     }
   };
 
-  let isFirst = true;
-  for (const rec of pages) {
-    if (!isFirst) await sleep(auditDelayMs());
-    isFirst = false;
+  async function runLocal(rec: PageRecord): Promise<void> {
+    if (!lighthouseFn) {
+      ({ default: lighthouseFn } = await import("lighthouse"));
+      fs.mkdirSync(lhDir, { recursive: true });
+    }
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= MAX_LIGHTHOUSE_ATTEMPTS; attempt++) {
       let launched: { close: () => Promise<void> } | null = null;
       try {
         launched = await launchBrowser();
-        const result = await lighthouse(
+        const result = await lighthouseFn!(
           rec.url,
           {
             port,
@@ -369,7 +408,7 @@ export async function runLighthouse(
           throw new Error("missing Lighthouse category scores");
         }
 
-        details.set(rec.slug, buildLighthouseDetail(lhr, s));
+        details.set(rec.slug, buildLighthouseDetail(lhr, s, `lighthouse/${encodeURIComponent(rec.slug)}.html`, "local"));
         console.log(
           `  ✓ ${rec.slug} — perf ${s.performance} / a11y ${s.accessibility} / bp ${s.bestPractices} / seo ${s.seo}`,
         );
@@ -389,6 +428,32 @@ export async function runLighthouse(
     if (lastError) {
       console.warn(`  ✗ ${rec.slug} — Lighthouse failed: ${lastError.message}`);
     }
+  }
+
+  let isFirstLocal = true;
+  for (const rec of pages) {
+    if (psiEligible) {
+      try {
+        const detail = await fetchPsiLighthouseDetail(rec.url, psiKey!);
+        if (detail) {
+          details.set(rec.slug, detail);
+          const s = detail.scores;
+          console.log(
+            `  ✓ ${rec.slug} (PSI) — perf ${s.performance} / a11y ${s.accessibility} / bp ${s.bestPractices} / seo ${s.seo}`,
+          );
+          continue;
+        }
+      } catch (err) {
+        console.warn(`  ↻ ${rec.slug} — PSI failed (${(err as Error).message}), falling back to local Lighthouse`);
+      }
+    }
+
+    // Local Lighthouse launches a real browser per attempt, so keep the
+    // inter-audit jitter that protects small/shared target hosts from a
+    // burst of full page loads back to back.
+    if (!isFirstLocal) await sleep(auditDelayMs());
+    isFirstLocal = false;
+    await runLocal(rec);
   }
 
   return details;

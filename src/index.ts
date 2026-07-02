@@ -13,6 +13,7 @@ import {
   COLOR_SCHEMES,
   toSlug,
   DEFAULT_CONCURRENCY,
+  DEFAULT_SITE_CONCURRENCY,
   type PageRecord,
   type ConsoleEvent,
   type SeoMeta,
@@ -187,7 +188,8 @@ Capture:
   --shot <mode>          screenshot mode: fullpage (default, tall scroll capture),
                          viewport (above-the-fold crop only), or both (full-page
                          plus an above-the-fold <slug>@fold.png)
-  --no-dark              skip the dark-colour-scheme screenshot pass (light only)
+  --scheme <s>           color scheme(s) to capture: light, dark (repeatable,
+                         default both)
   --screens              also slice full-page shots into sequential viewport-height
                          images (<slug>@screen-N.png) and mark the boundaries on the
                          full-page shot; implies full-page capture even with --shot viewport
@@ -230,7 +232,9 @@ Mirror (asset extraction — for authorized sites / design reference):
                          browses offline (modifies the saved files in place)
 
 Performance:
-  --concurrency <N>      parallel pages in flight (default ${DEFAULT_CONCURRENCY})
+  --concurrency <N>      parallel pages in flight per site (default ${DEFAULT_CONCURRENCY})
+  --site-concurrency <N> in multi-site compare mode (2+ URLs), how many sites
+                         to crawl at once (default ${DEFAULT_SITE_CONCURRENCY})
 
 Video:
   --video                record a scrolling video of each crawled page
@@ -267,8 +271,9 @@ function parseCli(): ParsedCli {
         "exclude":        { type: "string" },
         "auth-storage":   { type: "string" },
         "concurrency":    { type: "string" },
+        "site-concurrency": { type: "string" },
         "shot":           { type: "string" },
-        "no-dark":        { type: "boolean" },
+        "scheme":         { type: "string", multiple: true },
         "screens":        { type: "boolean" },
         "max-screens":    { type: "string" },
         "video":          { type: "boolean" },
@@ -393,6 +398,15 @@ function parseCli(): ParsedCli {
   }
   const videoSchemes = rawSchemes.length > 0 ? rawSchemes : ["light"];
 
+  const rawShotSchemes = (values["scheme"] as string[] | undefined) ?? [];
+  for (const s of rawShotSchemes) {
+    if (!validSchemes.includes(s as typeof COLOR_SCHEMES[number])) {
+      console.error(`trawl: --scheme must be one of: ${validSchemes.join(", ")}, got "${s}"`);
+      process.exit(1);
+    }
+  }
+  const shotSchemes = rawShotSchemes.length > 0 ? rawShotSchemes : [...COLOR_SCHEMES];
+
   // Mirror mode is asset-focused: --mirror-video implies --mirror, and either one
   // turns off the audit grid (Lighthouse/axe/links + the screenshot phase) so the
   // run downloads assets instead of auditing. Recon stays on (it's cheap and the
@@ -430,8 +444,9 @@ function parseCli(): ParsedCli {
     include:      re(values["include"], "include"),
     exclude:      re(values["exclude"], "exclude"),
     concurrency:  num(values["concurrency"], "concurrency") ?? DEFAULT_CONCURRENCY,
+    siteConcurrency: num(values["site-concurrency"], "site-concurrency") ?? DEFAULT_SITE_CONCURRENCY,
     shotMode,
-    noDark:       Boolean(values["no-dark"]),
+    schemes:      shotSchemes,
     screens:      Boolean(values["screens"]),
     maxScreens:   num(values["max-screens"], "max-screens") ?? 20,
     authStorage:  authStorage(values["auth-storage"]),
@@ -844,7 +859,7 @@ async function shoot(
   pages: PageRecord[],
   outDir: string,
   runAxeScan: boolean,
-  options: Pick<RunOptions, "authStorage" | "concurrency" | "shotMode" | "noDark" | "screens" | "maxScreens">,
+  options: Pick<RunOptions, "authStorage" | "concurrency" | "shotMode" | "schemes" | "screens" | "maxScreens">,
 ): Promise<{ axeResults: Map<string, AxeSummary>; screenCounts: Map<string, Record<string, number>> }> {
   const browser: Browser = await chromium.launch({
     args: ["--ignore-certificate-errors"],
@@ -853,9 +868,7 @@ async function shoot(
   const screenCounts = new Map<string, Record<string, number>>();
   const axeLock = new Set<string>(); // prevents concurrent axe runs on the same slug
 
-  const schemes = options.noDark
-    ? COLOR_SCHEMES.filter((s) => s !== "dark")
-    : COLOR_SCHEMES;
+  const schemes = options.schemes as typeof COLOR_SCHEMES[number][];
 
   for (const scheme of schemes) {
     for (const vp of VIEWPORTS) {
@@ -1157,6 +1170,7 @@ async function runSite(
     consoleEvents: crawled.consoleEvents,
     links,
     site: siteIntel,
+    schemes: options.mirror ? [] : options.schemes,
   });
   writeResults(outDir, results);
 
@@ -1171,7 +1185,7 @@ async function runSite(
   const lhSummary = lighthouse ? `, Lighthouse on ${lighthouse.size}` : ", Lighthouse skipped";
   const axeSummary = !options.noAxe ? `, axe on ${axeResults.size}` : ", axe skipped";
   const linksSummary = links.length > 0 ? `, ${links.length} links (${links.filter((l) => !l.ok).length} broken)` : "";
-  const modeCount = options.noDark ? 1 : COLOR_SCHEMES.length;
+  const modeCount = options.schemes.length;
   console.log(
     `\nDone (${siteLabel}). ${crawled.pages.length} pages × ${VIEWPORTS.length} viewports × ${modeCount} modes${lhSummary}${axeSummary}${linksSummary}`,
   );
@@ -1252,21 +1266,30 @@ async function main(): Promise<void> {
   const sitesDir = path.join(compareDir, "sites");
   fs.mkdirSync(sitesDir, { recursive: true });
 
-  const runs: { results: Results; dir: string }[] = [];
-  for (let i = 0; i < urls.length; i++) {
-    const url = urls[i]!;
-    const label = siteLabelFor(url);
-    const subDirName = label;
-    const outDir = path.join(sitesDir, subDirName);
+  // Sites run concurrently (bounded by --site-concurrency) each in their own
+  // browser; slots refill as sites finish, so N URLs don't wait on each other.
+  const slots: ({ results: Results; dir: string } | null)[] = new Array(urls.length).fill(null);
+  let nextSite = 0;
+  async function siteWorker(): Promise<void> {
+    while (true) {
+      const i = nextSite++;
+      if (i >= urls.length) return;
+      const url = urls[i]!;
+      const label = siteLabelFor(url);
+      const outDir = path.join(sitesDir, label);
 
-    console.log(`\n=== [${i + 1}/${urls.length}] ${url} ===`);
-    try {
-      const r = await runSite(url, options, outDir, runStamp, label, null);
-      runs.push({ results: r.results, dir: subDirName });
-    } catch (err) {
-      console.warn(`\nSite failed: ${url} — ${(err as Error).message}`);
+      console.log(`\n=== [${i + 1}/${urls.length}] ${url} ===`);
+      try {
+        const r = await runSite(url, options, outDir, runStamp, label, null);
+        slots[i] = { results: r.results, dir: label };
+      } catch (err) {
+        console.warn(`\nSite failed: ${url} — ${(err as Error).message}`);
+      }
     }
   }
+  const siteWorkers = Array.from({ length: Math.max(1, Math.min(options.siteConcurrency, urls.length)) }, () => siteWorker());
+  await Promise.all(siteWorkers);
+  const runs = slots.filter((r): r is { results: Results; dir: string } => r !== null);
 
   if (runs.length === 0) {
     console.error("\nNo sites completed successfully.");
